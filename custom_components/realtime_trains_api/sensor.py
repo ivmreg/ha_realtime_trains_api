@@ -176,11 +176,18 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             scheduled = _to_colonseparatedtime(departure["locationDetail"]["gbttBookedDeparture"])
             scheduledTs = _timestamp(scheduled, departuredate)
 
-            if _delta_secs(scheduledTs, now) < self._timeoffset.total_seconds():
-                continue
-
-            estimated = _to_colonseparatedtime(departure["locationDetail"]["realtimeDeparture"])
+            # Prefer realtime/estimated departure when deciding whether this
+            # service is still in the future. If realtime is missing or empty
+            # fall back to the scheduled time.
+            realtime_raw = departure["locationDetail"].get("realtimeDeparture") or departure["locationDetail"].get("gbttBookedDeparture")
+            estimated = _to_colonseparatedtime(realtime_raw)
             estimatedTs = _timestamp(estimated, departuredate)
+
+            # If the estimated departure has already passed the configured
+            # timeoffset, skip this service. Using the estimated time allows
+            # delayed services to remain until their realtime departure.
+            if _delta_secs(estimatedTs, now) < self._timeoffset.total_seconds():
+                continue
 
             if nextDepartureEstimatedTs is None:
                 nextDepartureEstimatedTs = estimatedTs
