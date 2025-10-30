@@ -168,10 +168,13 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         departures = [] if self._data == {} or self._data["services"] == None else self._data["services"]
 
         for departure in departures:
-            if not departure["isPassenger"] :
+            if not departure["isPassenger"]:
                 continue
 
             departuredate = TIMEZONE.localize(datetime.fromisoformat(departure["runDate"]))
+
+            # We'll validate the route when we get the full journey data
+            # This ensures we only filter out circular routes where you'd have to go past your destination
 
             scheduled = _to_colonseparatedtime(departure["locationDetail"]["gbttBookedDeparture"])
             scheduledTs = _timestamp(scheduled, departuredate)
@@ -257,8 +260,20 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 stopsOfInterest = []
                 stopCount = -1 # origin counts as first stop in the returned json
                 found = False
-                for stop in data['locations']:
-                    if stop['crs'] == self._journey_end and stop['displayAs'] != 'ORIGIN':
+                # First, find our boarding station's index in the route
+                boarding_station_idx = -1
+                for idx, stop in enumerate(data['locations']):
+                    if stop['crs'] == self._journey_start:
+                        boarding_station_idx = idx
+                        break
+
+                # Then look for our destination after our boarding station
+                for idx, stop in enumerate(data['locations']):
+                    if idx <= boarding_station_idx:
+                        continue
+                    
+                    if stop['crs'] == self._journey_end:
+                        # Found our destination after our boarding station - this is a valid route
                         scheduled_arrival = _timestamp(_to_colonseparatedtime(stop['gbttBookedArrival']), scheduled_departure)
                         estimated_arrival = _timestamp(_to_colonseparatedtime(stop['realtimeArrival']), scheduled_departure)
 
