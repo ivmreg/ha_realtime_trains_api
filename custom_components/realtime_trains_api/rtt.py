@@ -11,6 +11,7 @@ STRFFORMAT = "%d-%m-%Y %H:%M"
 
 REASON_MISSING_ORIGIN = "missing_origin"
 REASON_DESTINATION_NOT_REACHED = "destination_not_reached"
+REASON_WRONG_DIRECTION = "wrong_direction"
 
 
 class JourneyParseResult(NamedTuple):
@@ -128,12 +129,20 @@ def parse_service_detail(
 
     boarding_idx = None
     for idx, stop in enumerate(locations):
-        if stop.get("crs") == journey_start:
+        if _code_matches(stop, journey_start):
             boarding_idx = idx
             break
 
     if boarding_idx is None:
         return JourneyParseResult(False, None, REASON_MISSING_ORIGIN)
+
+    # If the destination has already been visited earlier in the journey, the
+    # train is moving away from the requested destination (e.g. circular
+    # services that originate and finish at the same station). Skip these to
+    # avoid presenting the wrong direction.
+    for previous_stop in locations[:boarding_idx]:
+        if _code_matches(previous_stop, journey_end):
+            return JourneyParseResult(False, None, REASON_WRONG_DIRECTION)
 
     stops_info: List[Dict[str, Any]] = []
     stop_count = -1
@@ -143,7 +152,7 @@ def parse_service_detail(
             continue
 
         crs = stop.get("crs")
-        if crs == journey_end:
+        if _code_matches(stop, journey_end):
             scheduled_arrival_raw = _first_valid_time(stop, [
                 "gbttBookedArrival",
                 "gbttBookedDeparture",
@@ -217,3 +226,17 @@ def parse_service_detail(
         stop_count += 1
 
     return JourneyParseResult(False, None, REASON_DESTINATION_NOT_REACHED)
+
+
+def _code_matches(stop: Dict[str, Any], code: str) -> bool:
+    """Return True if the stop's CRS or TIPLOC matches the provided code."""
+    if not code:
+        return False
+    upper_code = code.upper()
+    crs = stop.get("crs")
+    if isinstance(crs, str) and crs.upper() == upper_code:
+        return True
+    tiploc = stop.get("tiploc")
+    if isinstance(tiploc, str) and tiploc.upper() == upper_code:
+        return True
+    return False

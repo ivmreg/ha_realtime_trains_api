@@ -254,6 +254,13 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                             self._journey_end,
                             self._journey_start,
                         )
+                    elif result.reason == rtt.REASON_WRONG_DIRECTION:
+                        _LOGGER.debug(
+                            "Skipping service %s because it has already departed %s before calling at %s",
+                            train['service_uid'],
+                            self._journey_end,
+                            self._journey_start,
+                        )
                     return False
 
                 if result.data:

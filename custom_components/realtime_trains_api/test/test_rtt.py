@@ -140,3 +140,41 @@ def test_parse_service_detail_handles_missing_destination() -> None:
 
     assert result.success is False
     assert result.reason == rtt.REASON_DESTINATION_NOT_REACHED
+
+
+def test_parse_service_detail_rejects_wrong_direction() -> None:
+    detail = {
+        "locations": [
+            {
+                "crs": "CST",
+                "gbttBookedDeparture": "1700",
+                "displayAs": "ORIGIN",
+            },
+            {
+                "crs": "BKH",
+                "gbttBookedDeparture": "1735",
+                "realtimeDeparture": "1738",
+            },
+            {
+                "crs": "STJ",
+                "gbttBookedArrival": "1740",
+            },
+            {
+                "crs": "CST",
+                "gbttBookedArrival": "1851",
+                "displayAs": "DESTINATION",
+            },
+        ]
+    }
+
+    result = rtt.parse_service_detail(
+        detail,
+        "BKH",
+        "CST",
+        SCHEDULED_DEPARTURE,
+        ESTIMATED_DEPARTURE,
+        [],
+    )
+
+    assert result.success is False
+    assert result.reason == rtt.REASON_WRONG_DIRECTION
