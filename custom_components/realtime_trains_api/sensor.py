@@ -3,16 +3,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import logging
-import aiohttp
-import pytz
-
-import voluptuous as vol
 from typing import cast
+
+import aiohttp
+import voluptuous as vol
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
 from homeassistant.const import (
     UnitOfTime,
-    STATE_UNKNOWN,
     CONF_SCAN_INTERVAL,
 )
 from homeassistant.core import HomeAssistant
@@ -22,6 +20,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.util import Throttle
 import homeassistant.util.dt as dt_util
+
+from . import rtt
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,8 +47,8 @@ CONF_SENSORNAME = "sensor_name"
 CONF_TIMEOFFSET = "time_offset"
 CONF_STOPS_OF_INTEREST = "stops_of_interest"
 
-TIMEZONE = pytz.timezone('Europe/London')
-STRFFORMAT = "%d-%m-%Y %H:%M"
+TIMEZONE = rtt.TIMEZONE
+STRFFORMAT = rtt.STRFFORMAT
 
 _QUERY_SCHEME = vol.Schema(
     {
@@ -168,28 +168,13 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         departures = [] if self._data == {} or self._data["services"] == None else self._data["services"]
 
         for departure in departures:
-            if not departure["isPassenger"]:
+            parsed = rtt.parse_departure(departure, now, self._timeoffset)
+            if parsed is None:
                 continue
 
-            departuredate = TIMEZONE.localize(datetime.fromisoformat(departure["runDate"]))
-
-            # We'll validate the route when we get the full journey data
-            # This ensures we only filter out circular routes where you'd have to go past your destination
-
-            scheduled = _to_colonseparatedtime(departure["locationDetail"]["gbttBookedDeparture"])
-            scheduledTs = _timestamp(scheduled, departuredate)
-
-            # Prefer realtime/estimated departure when deciding whether this
-            # service is still in the future. If realtime is missing or empty
-            # fall back to the scheduled time.
-            realtime_raw = departure["locationDetail"].get("realtimeDeparture") or departure["locationDetail"].get("gbttBookedDeparture")
-            estimated = _to_colonseparatedtime(realtime_raw)
-            estimatedTs = _timestamp(estimated, departuredate)
-
-            # If the estimated departure has already passed the configured
-            # timeoffset, skip this service. Using the estimated time allows
-            # delayed services to remain until their realtime departure.
-            if _delta_secs(estimatedTs, now) < self._timeoffset.total_seconds():
+            train, scheduledTs, estimatedTs = parsed
+            route_valid = await self._add_journey_data(train, scheduledTs, estimatedTs)
+            if not route_valid:
                 continue
 
             if nextDepartureEstimatedTs is None:
@@ -197,31 +182,16 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             else:
                 nextDepartureEstimatedTs = min(nextDepartureEstimatedTs, estimatedTs)
 
-            departureCount += 1
-
-            train = {
-                    "origin_name": departure["locationDetail"]["origin"][0]["description"],
-                    "destination_name": departure["locationDetail"]["destination"][0]["description"],
-                    #"service_date": departure["runDate"],
-                    "service_uid": departure["serviceUid"],
-                    "scheduled": scheduledTs.strftime(STRFFORMAT),
-                    "estimated": estimatedTs.strftime(STRFFORMAT),
-                    "delay": _delta_secs(estimatedTs, scheduledTs) // 60,
-                    "minutes": _delta_secs(estimatedTs, now) // 60,
-                    "platform": departure["locationDetail"].get("platform", None),
-                    "operator_name": departure["atocName"],
-                }
-            if departureCount > self._journey_data_for_next_X_trains:
-                break;
-            
-            await self._add_journey_data(train, scheduledTs, estimatedTs)
             self._next_trains.append(train)
+            departureCount += 1
+            if departureCount > self._journey_data_for_next_X_trains:
+                break
         self._aggregate_data = await self._calculate_aggregates()
 
         if nextDepartureEstimatedTs is None:
             self._state = None
         else:
-            self._state = _delta_secs(nextDepartureEstimatedTs, now) // 60
+            self._state = int(rtt.delta_secs(nextDepartureEstimatedTs, now) // 60)
 
         if self._autoadjustscans:
             if nextDepartureEstimatedTs is None:
@@ -251,69 +221,50 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             else:
                 _LOGGER.warning("Invalid response from API")
 
-    async def _add_journey_data(self, train, scheduled_departure, estimated_departure):
-        """Perform an API request."""
+    async def _add_journey_data(self, train, scheduled_departure, estimated_departure) -> bool:
+        """Populate detailed journey data for a service.
+
+        Returns True if the service reaches the configured destination after the
+        boarding station, otherwise False.
+        """
         trainUrl = self.TRANSPORT_API_URL_BASE + f"service/{train['service_uid']}/{scheduled_departure.strftime('%Y/%m/%d')}"
         async with self._client.get(trainUrl, auth=aiohttp.BasicAuth(login=self._username, password=self._password, encoding='utf-8')) as response:
             if response.status == 200:
                 data = await response.json()
-                stopsOfInterest = []
-                stopCount = -1 # origin counts as first stop in the returned json
-                found = False
-                # First, find our boarding station's index in the route
-                boarding_station_idx = -1
-                for idx, stop in enumerate(data['locations']):
-                    if stop['crs'] == self._journey_start:
-                        boarding_station_idx = idx
-                        break
+                result = rtt.parse_service_detail(
+                    data,
+                    self._journey_start,
+                    self._journey_end,
+                    scheduled_departure,
+                    estimated_departure,
+                    self._stops_of_interest,
+                )
 
-                # Then look for our destination after our boarding station
-                for idx, stop in enumerate(data['locations']):
-                    if idx <= boarding_station_idx:
-                        continue
-                    
-                    if stop['crs'] == self._journey_end:
-                        # Found our destination after our boarding station - this is a valid route
-                        scheduled_arrival = _timestamp(_to_colonseparatedtime(stop['gbttBookedArrival']), scheduled_departure)
-                        estimated_arrival = _timestamp(_to_colonseparatedtime(stop['realtimeArrival']), scheduled_departure)
-
-                        status = "OK"
-                        if 'CANCELLED' in stop['displayAs']:
-                            status = "Cancelled"
-                        elif estimated_arrival > scheduled_arrival:
-                            status = "Delayed"
-
-                        newtrain = {
-                            "stops_of_interest": stopsOfInterest,
-                            "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
-                            "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
-                            "arrival_delay":  _delta_secs(estimated_arrival, scheduled_arrival) // 60,
-                            "journey_time_mins": _delta_secs(estimated_arrival, estimated_departure) // 60,
-                            "stops": stopCount,
-                            "status": status
-                        }
-                        train.update(newtrain)
-                        found = True
-                        break
-                    elif stop['crs'] in self._stops_of_interest and stop['isPublicCall']:
-                        scheduled_stop = _timestamp(_to_colonseparatedtime(stop['gbttBookedArrival']), scheduled_departure)
-                        estimated_stop = _timestamp(_to_colonseparatedtime(stop['realtimeArrival']), scheduled_departure)
-                        stopsOfInterest.append(
-                            {
-                                "stop": stop['crs'],
-                                "name": stop['description'],
-                                "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
-                                "estimate_stop": estimated_stop.strftime(STRFFORMAT),
-                                "stop_delay":  _delta_secs(estimated_stop, scheduled_stop) // 60,
-                                "journey_time_mins": _delta_secs(estimated_stop, estimated_departure) // 60,
-                                "stops": stopCount
-                            }
+                if not result.success:
+                    if result.reason == rtt.REASON_MISSING_ORIGIN:
+                        _LOGGER.warning(
+                            "Service %s does not call at configured origin %s",
+                            train['service_uid'],
+                            self._journey_start,
                         )
-                    stopCount += 1
-                if not found:
-                    _LOGGER.warning(f"Could not find {self._journey_end} in stops for service {train['service_uid']}.")
-            else:
-                _LOGGER.warning(f"Could not populate arrival times: Invalid response from API (HTTP code {response.status})")
+                    elif result.reason == rtt.REASON_DESTINATION_NOT_REACHED:
+                        _LOGGER.debug(
+                            "Skipping service %s as destination %s is not reached after origin %s",
+                            train['service_uid'],
+                            self._journey_end,
+                            self._journey_start,
+                        )
+                    return False
+
+                if result.data:
+                    train.update(result.data)
+                return True
+
+            _LOGGER.warning(
+                "Could not populate arrival times: Invalid response from API (HTTP code %s)",
+                response.status,
+            )
+            return False
 
     async def _calculate_aggregates(self):
         """Calculate aggregate delay and duration data."""
@@ -375,17 +326,3 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 attrs[ATTR_AGGREGATE] = self._aggregate_data
             return attrs
 
-def _to_colonseparatedtime(hhmm_time_str : str) -> str:
-    return hhmm_time_str[:2] + ":" + hhmm_time_str[2:]
-
-def _timestamp(hhmm_time_str : str, date : datetime=None) -> datetime:
-    now = cast(datetime, dt_util.now()).astimezone(TIMEZONE) if date is None else date
-    hhmm_time_a = datetime.strptime(hhmm_time_str, "%H:%M")
-    hhmm_datetime = now.replace(hour=hhmm_time_a.hour, minute=hhmm_time_a.minute, second=0, microsecond=0)
-    if hhmm_datetime < now:
-        hhmm_datetime += timedelta(days=1)
-    return hhmm_datetime
-
-def _delta_secs(hhmm_datetime_a : datetime, hhmm_datetime_b : datetime) -> float:
-    """Calculate time delta in minutes to a time in hh:mm format."""
-    return (hhmm_datetime_a - hhmm_datetime_b).total_seconds()
