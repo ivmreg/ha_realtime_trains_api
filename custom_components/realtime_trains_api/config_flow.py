@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import voluptuous as vol
@@ -7,6 +8,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -26,6 +28,7 @@ from .const import (
 )
 
 FIELD_ADD_ANOTHER = "add_another"
+FIELD_EDIT_QUERIES = "edit_queries"
 FIELD_PLATFORMS = "platforms_input"
 FIELD_STOPS = "stops_input"
 FIELD_TIME_OFFSET = "time_offset_minutes"
@@ -54,7 +57,7 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         {
             vol.Optional(CONF_SENSORNAME, default=defaults.get(CONF_SENSORNAME, "")): cv.string,
             vol.Required(CONF_START, default=defaults.get(CONF_START, "")): cv.string,
-            vol.Required(CONF_END, default=defaults.get(CONF_END, "")): cv.string,
+            vol.Optional(CONF_END, default=defaults.get(CONF_END, "")): cv.string,
             vol.Optional(CONF_JOURNEYDATA, default=defaults.get(CONF_JOURNEYDATA, 0)): vol.All(
                 vol.Coerce(int), vol.Range(min=0)
             ),
@@ -73,6 +76,93 @@ def _split_csv(value: str) -> list[str]:
         return []
     cleaned = value.replace("\n", ",")
     return [item.strip() for item in cleaned.split(",") if item.strip()]
+
+
+def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bool, dict[str, str]]:
+    errors: dict[str, str] = {}
+
+    origin = str(user_input.get(CONF_START, "")).strip().upper()
+    destination_raw = user_input.get(CONF_END, "")
+    destination_str = str(destination_raw).strip().upper() if destination_raw is not None else ""
+    destination = destination_str or None
+
+    if not origin:
+        errors[CONF_START] = "required"
+
+    sensor_name_raw = user_input.get(CONF_SENSORNAME)
+    sensor_name = sensor_name_raw.strip() if isinstance(sensor_name_raw, str) else None
+    if sensor_name == "":
+        sensor_name = None
+
+    journey_data = int(user_input.get(CONF_JOURNEYDATA, 0))
+    if journey_data < 0:
+        journey_data = 0
+
+    time_offset = int(user_input.get(FIELD_TIME_OFFSET, 0))
+    if time_offset < 0:
+        time_offset = 0
+
+    stops = _split_csv(user_input.get(FIELD_STOPS, ""))
+    platforms = _split_csv(user_input.get(FIELD_PLATFORMS, ""))
+
+    add_another = bool(user_input.get(FIELD_ADD_ANOTHER))
+
+    query = {
+        CONF_SENSORNAME: sensor_name,
+    CONF_START: origin,
+    CONF_END: destination,
+        CONF_JOURNEYDATA: journey_data,
+        CONF_TIMEOFFSET: time_offset,
+        CONF_STOPS_OF_INTEREST: stops,
+        CONF_PLATFORMS_OF_INTEREST: platforms,
+    }
+
+    return query, add_another, errors
+
+
+def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
+    time_offset = raw_query.get(CONF_TIMEOFFSET, 0)
+    if isinstance(time_offset, timedelta):
+        minutes = int(time_offset.total_seconds() // 60)
+    else:
+        try:
+            minutes = int(time_offset)
+        except (TypeError, ValueError):
+            minutes = 0
+
+    stops = raw_query.get(CONF_STOPS_OF_INTEREST, []) or []
+    platforms = raw_query.get(CONF_PLATFORMS_OF_INTEREST, []) or []
+
+    return {
+        CONF_SENSORNAME: raw_query.get(CONF_SENSORNAME, "") or "",
+        CONF_START: raw_query.get(CONF_START, ""),
+    CONF_END: (raw_query.get(CONF_END) or ""),
+        CONF_JOURNEYDATA: raw_query.get(CONF_JOURNEYDATA, 0),
+        FIELD_TIME_OFFSET: minutes,
+        FIELD_STOPS: ", ".join(stops),
+        FIELD_PLATFORMS: ", ".join(platforms),
+        FIELD_ADD_ANOTHER: False,
+    }
+
+
+def _coerce_scan_interval_seconds(value: Any) -> int:
+    if isinstance(value, timedelta):
+        return max(MIN_SCAN_INTERVAL_SECONDS, int(value.total_seconds()))
+    if isinstance(value, (int, float)):
+        return max(MIN_SCAN_INTERVAL_SECONDS, int(value))
+    if isinstance(value, str):
+        try:
+            number = int(float(value.strip()))
+        except (TypeError, ValueError):
+            return int(DEFAULT_SCAN_INTERVAL.total_seconds())
+        return max(MIN_SCAN_INTERVAL_SECONDS, number)
+    if isinstance(value, dict):
+        try:
+            number = timedelta(**{key: int(val) for key, val in value.items()})
+        except (TypeError, ValueError):
+            return int(DEFAULT_SCAN_INTERVAL.total_seconds())
+        return max(MIN_SCAN_INTERVAL_SECONDS, int(number.total_seconds()))
+    return int(DEFAULT_SCAN_INTERVAL.total_seconds())
 
 
 @config_entries.HANDLERS.register(DOMAIN)
@@ -118,13 +208,13 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
         defaults = dict(user_input) if user_input else {}
 
         if user_input is not None:
-            query, add_another, query_errors = self._convert_query_input(user_input)
+            query, add_another, query_errors = _convert_query_input(user_input)
             if query_errors:
                 errors.update(query_errors)
                 defaults = {
                     CONF_SENSORNAME: query.get(CONF_SENSORNAME) or "",
                     CONF_START: query.get(CONF_START, ""),
-                    CONF_END: query.get(CONF_END, ""),
+                    CONF_END: query.get(CONF_END) or "",
                     CONF_JOURNEYDATA: query.get(CONF_JOURNEYDATA, 0),
                     FIELD_TIME_OFFSET: query.get(CONF_TIMEOFFSET, 0),
                     FIELD_STOPS: user_input.get(FIELD_STOPS, ""),
@@ -193,45 +283,128 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
             return f"Realtime Trains API ({username})"
         return "Realtime Trains API"
 
-    def _convert_query_input(
-        self, user_input: dict[str, Any]
-    ) -> tuple[dict[str, Any], bool, dict[str, str]]:
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
+        return RealtimeTrainsOptionsFlowHandler(config_entry)
+
+
+class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
+    """Allow users to adjust existing Realtime Trains API configuration."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self._queries: list[dict[str, Any]] = []
+        self._options: dict[str, Any] = {}
+
+        if CONF_QUERIES in config_entry.options:
+            existing_queries = list(config_entry.options.get(CONF_QUERIES) or [])
+        else:
+            existing_queries = list(config_entry.data.get(CONF_QUERIES, []))
+        self._existing_queries_raw = list(existing_queries)
+        self._query_defaults = [_query_form_defaults(query) for query in existing_queries]
+
+        auto_adjust_default = config_entry.options.get(
+            CONF_AUTOADJUSTSCANS,
+            config_entry.data.get(CONF_AUTOADJUSTSCANS, False),
+        )
+        scan_interval_value = config_entry.options.get(
+            CONF_SCAN_INTERVAL,
+            config_entry.data.get(
+                CONF_SCAN_INTERVAL,
+                int(DEFAULT_SCAN_INTERVAL.total_seconds()),
+            ),
+        )
+
+        self._auto_adjust_default = bool(auto_adjust_default)
+        self._scan_interval_default = _coerce_scan_interval_seconds(scan_interval_value)
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        if user_input is not None:
+            self._options[CONF_AUTOADJUSTSCANS] = bool(user_input.get(CONF_AUTOADJUSTSCANS, False))
+            self._options[CONF_SCAN_INTERVAL] = int(user_input[CONF_SCAN_INTERVAL])
+
+            edit_queries = bool(user_input.get(FIELD_EDIT_QUERIES, False))
+
+            if not self._existing_queries_raw:
+                edit_queries = True
+
+            if not edit_queries:
+                options = dict(self._options)
+                options[CONF_QUERIES] = list(self._existing_queries_raw)
+                return self.async_create_entry(title="", data=options)
+
+            return await self.async_step_query()
+
+        force_edit = not self._existing_queries_raw
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self._init_schema(force_edit),
+        )
+
+    async def async_step_query(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
 
-        origin = str(user_input.get(CONF_START, "")).strip().upper()
-        destination = str(user_input.get(CONF_END, "")).strip().upper()
+        if user_input is not None:
+            query, add_another, query_errors = _convert_query_input(user_input)
+            if query_errors:
+                errors.update(query_errors)
+                defaults = {
+                    CONF_SENSORNAME: user_input.get(CONF_SENSORNAME, ""),
+                    CONF_START: user_input.get(CONF_START, ""),
+                    CONF_END: user_input.get(CONF_END, ""),
+                    CONF_JOURNEYDATA: user_input.get(CONF_JOURNEYDATA, 0),
+                    FIELD_TIME_OFFSET: user_input.get(FIELD_TIME_OFFSET, 0),
+                    FIELD_STOPS: user_input.get(FIELD_STOPS, ""),
+                    FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
+                    FIELD_ADD_ANOTHER: add_another,
+                }
+                return self._show_query_form(defaults, errors)
 
-        if not origin:
-            errors[CONF_START] = "required"
-        if not destination:
-            errors[CONF_END] = "required"
+            self._queries.append(query)
 
-        sensor_name_raw = user_input.get(CONF_SENSORNAME)
-        sensor_name = sensor_name_raw.strip() if isinstance(sensor_name_raw, str) else None
-        if sensor_name == "":
-            sensor_name = None
+            if add_another:
+                defaults = self._prefill_for_index(len(self._queries))
+                return self._show_query_form(defaults, {})
 
-        journey_data = int(user_input.get(CONF_JOURNEYDATA, 0))
-        if journey_data < 0:
-            journey_data = 0
+            options = dict(self._options)
+            options[CONF_QUERIES] = list(self._queries)
+            return self.async_create_entry(title="", data=options)
 
-        time_offset = int(user_input.get(FIELD_TIME_OFFSET, 0))
-        if time_offset < 0:
-            time_offset = 0
+        defaults = self._prefill_for_index(0)
+        return self._show_query_form(defaults, errors)
 
-        stops = _split_csv(user_input.get(FIELD_STOPS, ""))
-        platforms = _split_csv(user_input.get(FIELD_PLATFORMS, ""))
+    def _show_query_form(self, defaults: dict[str, Any], errors: dict[str, str]) -> FlowResult:
+        defaults = dict(defaults)
+        remaining_defaults = len(self._query_defaults) - len(self._queries) - 1
+        defaults.setdefault(FIELD_ADD_ANOTHER, remaining_defaults >= 0)
 
-        add_another = bool(user_input.get(FIELD_ADD_ANOTHER))
+        description_placeholders = {"added": str(len(self._queries))}
+        return self.async_show_form(
+            step_id="query",
+            data_schema=_query_schema(defaults),
+            description_placeholders=description_placeholders,
+            errors=errors,
+        )
 
-        query = {
-            CONF_SENSORNAME: sensor_name,
-            CONF_START: origin,
-            CONF_END: destination,
-            CONF_JOURNEYDATA: journey_data,
-            CONF_TIMEOFFSET: time_offset,
-            CONF_STOPS_OF_INTEREST: stops,
-            CONF_PLATFORMS_OF_INTEREST: platforms,
+    def _prefill_for_index(self, index: int) -> dict[str, Any]:
+        if index < len(self._query_defaults):
+            defaults = dict(self._query_defaults[index])
+            defaults[FIELD_ADD_ANOTHER] = index < len(self._query_defaults) - 1
+            return defaults
+        return {}
+
+    def _init_schema(self, force_edit: bool) -> vol.Schema:
+        schema_dict: dict[Any, Any] = {
+            vol.Optional(CONF_AUTOADJUSTSCANS, default=self._auto_adjust_default): bool,
+            vol.Optional(
+                CONF_SCAN_INTERVAL,
+                default=self._scan_interval_default,
+            ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL_SECONDS, max=MAX_SCAN_INTERVAL_SECONDS)),
         }
 
-        return query, add_another, errors
+        if force_edit:
+            schema_dict[vol.Optional(FIELD_EDIT_QUERIES, default=True)] = bool
+        else:
+            schema_dict[vol.Optional(FIELD_EDIT_QUERIES, default=False)] = bool
+
+        return vol.Schema(schema_dict)
