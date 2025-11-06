@@ -80,8 +80,7 @@ def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in cleaned.split(",") if item.strip()]
 
 
-@config_entries.HANDLERS.register(DOMAIN)
-class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
+class RealtimeTrainsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[misc]
     """Handle a config flow for Realtime Trains API."""
 
     VERSION = 1
