@@ -7,6 +7,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_API_PASSWORD,
@@ -36,8 +37,8 @@ MAX_TIME_OFFSET_MINUTES = 12 * 60
 def _user_schema() -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(CONF_API_USERNAME): vol.All(str, lambda value: value.strip()),
-            vol.Required(CONF_API_PASSWORD): str,
+            vol.Required(CONF_API_USERNAME): cv.string,
+            vol.Required(CONF_API_PASSWORD): cv.string,
             vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,
             vol.Optional(
                 CONF_SCAN_INTERVAL,
@@ -51,23 +52,17 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     defaults = defaults or {}
     return vol.Schema(
         {
-            vol.Optional(CONF_SENSORNAME, default=defaults.get(CONF_SENSORNAME, "")): vol.All(
-                str, lambda value: value.strip()
-            ),
-            vol.Required(CONF_START, default=defaults.get(CONF_START, "")): vol.All(
-                str, lambda value: value.strip()
-            ),
-            vol.Required(CONF_END, default=defaults.get(CONF_END, "")): vol.All(
-                str, lambda value: value.strip()
-            ),
+            vol.Optional(CONF_SENSORNAME, default=defaults.get(CONF_SENSORNAME, "")): cv.string,
+            vol.Required(CONF_START, default=defaults.get(CONF_START, "")): cv.string,
+            vol.Required(CONF_END, default=defaults.get(CONF_END, "")): cv.string,
             vol.Optional(CONF_JOURNEYDATA, default=defaults.get(CONF_JOURNEYDATA, 0)): vol.All(
                 vol.Coerce(int), vol.Range(min=0)
             ),
             vol.Optional(FIELD_TIME_OFFSET, default=defaults.get(FIELD_TIME_OFFSET, 0)): vol.All(
                 vol.Coerce(int), vol.Range(min=0, max=MAX_TIME_OFFSET_MINUTES)
             ),
-            vol.Optional(FIELD_STOPS, default=defaults.get(FIELD_STOPS, "")): str,
-            vol.Optional(FIELD_PLATFORMS, default=defaults.get(FIELD_PLATFORMS, "")): str,
+            vol.Optional(FIELD_STOPS, default=defaults.get(FIELD_STOPS, "")): cv.string,
+            vol.Optional(FIELD_PLATFORMS, default=defaults.get(FIELD_PLATFORMS, "")): cv.string,
             vol.Optional(FIELD_ADD_ANOTHER, default=False): bool,
         }
     )
@@ -80,10 +75,12 @@ def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in cleaned.split(",") if item.strip()]
 
 
-class RealtimeTrainsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[misc]
+@config_entries.HANDLERS.register(DOMAIN)
+class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
     """Handle a config flow for Realtime Trains API."""
 
     VERSION = 1
+    domain = DOMAIN
 
     def __init__(self) -> None:
         self._config_data: dict[str, Any] = {}
