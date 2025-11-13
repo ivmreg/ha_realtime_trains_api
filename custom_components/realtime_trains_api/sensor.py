@@ -154,8 +154,8 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
     if not isinstance(raw_query, dict):
         raise ValueError("Query configuration must be a mapping")
 
-    if CONF_START not in raw_query or CONF_END not in raw_query:
-        raise ValueError("Query must define both origin and destination")
+    if CONF_START not in raw_query:
+        raise ValueError("Query must define origin station")
 
     sensor_name = raw_query.get(CONF_SENSORNAME)
     if isinstance(sensor_name, str):
@@ -164,7 +164,8 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
         sensor_name = str(sensor_name).strip() or None
 
     origin = str(raw_query[CONF_START]).strip().upper()
-    destination = str(raw_query[CONF_END]).strip().upper()
+    destination_raw = raw_query.get(CONF_END, "")
+    destination = str(destination_raw).strip().upper() if destination_raw else None
 
     journey_data = _coerce_positive_int(raw_query.get(CONF_JOURNEYDATA, 0))
     time_offset = _coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, DEFAULT_TIMEOFFSET))
@@ -188,11 +189,13 @@ def _create_sensors(
     autoadjustscans: bool,
     interval: timedelta,
     queries: list[Any],
+    entry_id: str | None = None,
 ) -> list[RealtimeTrainLiveTrainTimeSensor]:
     sensors: list[RealtimeTrainLiveTrainTimeSensor] = []
     seen_names: set[str] = set()
+    seen_unique_ids: set[str] = set()
 
-    for raw_query in queries or []:
+    for idx, raw_query in enumerate(queries or []):
         try:
             query = _normalize_query(raw_query)
         except ValueError as err:
@@ -210,13 +213,21 @@ def _create_sensors(
             query[CONF_STOPS_OF_INTEREST],
             query[CONF_PLATFORMS_OF_INTEREST],
             interval,
+            entry_id,
+            idx,
         )
 
         if sensor.name in seen_names:
             _LOGGER.warning("Duplicate sensor name '%s' - skipping duplicate entry", sensor.name)
             continue
 
+        if sensor.unique_id and sensor.unique_id in seen_unique_ids:
+            _LOGGER.warning("Duplicate unique ID '%s' - skipping duplicate entry", sensor.unique_id)
+            continue
+
         seen_names.add(sensor.name)
+        if sensor.unique_id:
+            seen_unique_ids.add(sensor.unique_id)
         sensors.append(sensor)
 
     return sensors
@@ -269,7 +280,7 @@ async def async_setup_entry(
     client = async_get_clientsession(hass)
     api_client = RealtimeTrainsApiClient(client, username, password)
 
-    sensors = _create_sensors(api_client, autoadjustscans, interval, queries)
+    sensors = _create_sensors(api_client, autoadjustscans, interval, queries, entry.entry_id)
 
     if sensors:
         async_add_entities(sensors, True)
@@ -296,19 +307,46 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         sensor_name: str | None,
         api_client: RealtimeTrainsApiClient,
         journey_start: str,
-        journey_end: str,
+        journey_end: str | None,
         journey_data_for_next_X_trains: int,
         timeoffset: timedelta,
         autoadjustscans: bool,
         stops_of_interest: list[str],
         platforms_of_interest: list[str],
         interval: timedelta,
+        entry_id: str | None = None,
+        query_index: int = 0,
     ) -> None:
         """Construct a live train time sensor."""
 
-        default_sensor_name = (
-            f"Next train from {journey_start} to {journey_end} ({timeoffset})" if (timeoffset.total_seconds() > 0)
-            else f"Next train from {journey_start} to {journey_end}")
+        if journey_end:
+            if platforms_of_interest:
+                platform_str = ", ".join(sorted(platforms_of_interest))
+                default_sensor_name = (
+                    f"Next train from {journey_start} platform {platform_str} to {journey_end} ({timeoffset})" 
+                    if (timeoffset.total_seconds() > 0)
+                    else f"Next train from {journey_start} platform {platform_str} to {journey_end}"
+                )
+            else:
+                default_sensor_name = (
+                    f"Next train from {journey_start} to {journey_end} ({timeoffset})" 
+                    if (timeoffset.total_seconds() > 0)
+                    else f"Next train from {journey_start} to {journey_end}"
+                )
+        else:
+            if platforms_of_interest:
+                platform_str = ", ".join(sorted(platforms_of_interest))
+                default_sensor_name = (
+                    f"Trains from {journey_start} platform {platform_str} ({timeoffset})" 
+                    if (timeoffset.total_seconds() > 0)
+                    else f"Trains from {journey_start} platform {platform_str}"
+                )
+            else:
+                default_sensor_name = (
+                    f"Trains from {journey_start} ({timeoffset})" 
+                    if (timeoffset.total_seconds() > 0)
+                    else f"Trains from {journey_start}"
+                )
 
         self._journey_start = journey_start
         self._journey_end = journey_end
@@ -328,6 +366,16 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
         self._name = default_sensor_name if sensor_name is None else sensor_name
         self._state = None
+        
+        # Generate a stable unique_id for config entry sensors
+        if entry_id:
+            # Create unique ID based on entry_id, origin, destination, platforms, and time offset
+            platforms_str = "_".join(sorted(platforms_of_interest)) if platforms_of_interest else "all"
+            dest_str = journey_end if journey_end else "all"
+            offset_str = f"{int(timeoffset.total_seconds())}" if timeoffset.total_seconds() > 0 else "0"
+            self._attr_unique_id = f"{entry_id}_{journey_start}_{dest_str}_{platforms_str}_{offset_str}_{query_index}"
+        else:
+            self._attr_unique_id = None
 
         self.async_update = self._async_update
 
@@ -413,6 +461,11 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
 
     @property
+    def unique_id(self):
+        """Return the unique ID of the sensor."""
+        return self._attr_unique_id
+
+    @property
     def name(self):
         """Return the name of the sensor."""
         return self._name
@@ -462,7 +515,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         stopCount = -1  # origin counts as first stop in the returned json
         found = False
         for stop in data['locations']:
-            if stop['crs'] == self._journey_end and stop['displayAs'] != 'ORIGIN':
+            if self._journey_end and stop['crs'] == self._journey_end and stop['displayAs'] != 'ORIGIN':
                 scheduled_arrival_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
                 estimated_arrival_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
 
@@ -522,7 +575,13 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     }
                 )
             stopCount += 1
-        if not found:
+        
+        # If no destination specified, just add stops of interest without destination arrival info
+        if not self._journey_end:
+            found = True
+            train["stops_of_interest"] = stopsOfInterest
+            train["stops"] = stopCount
+        elif not found:
             _LOGGER.warning(
                 "Could not find %s in stops for service %s.",
                 self._journey_end,
@@ -535,7 +594,8 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         attrs = {}
         if self._data is not None:
             attrs[ATTR_JOURNEY_START] = self._journey_start
-            attrs[ATTR_JOURNEY_END] = self._journey_end
+            if self._journey_end:
+                attrs[ATTR_JOURNEY_END] = self._journey_end
             if self._platforms_of_interest:
                 attrs[ATTR_PLATFORMS_OF_INTEREST] = sorted(self._platforms_of_interest)
             if self._next_trains:

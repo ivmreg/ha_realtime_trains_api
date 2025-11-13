@@ -50,6 +50,31 @@ Alternatively, you can use the built-in `uk_transport` integration (see https://
 
 # Guide
 
+## Features
+
+### UI Configuration Support
+
+Sensors created via config entries have unique IDs, allowing you to:
+- Rename entities from the UI
+- Customize entity settings
+- Enable/disable entities
+- Move entities to different areas
+
+Note: Sensors configured via YAML (legacy method) do not have unique IDs and cannot be managed from the UI.
+
+### Monitor All Trains from a Station or Platform
+
+You can now monitor all trains passing through a station, with optional filtering by:
+
+- **All trains from a station**: Omit the `destination` parameter to get all departures
+- **Specific platform(s)**: Use `platforms_of_interest` to filter by platform numbers
+- **Destination filtering**: Include `destination` for traditional origin-to-destination queries
+
+This is useful for:
+- Monitoring a busy station to see all available services
+- Tracking trains from a specific platform at your local station
+- Planning journeys when you have multiple destination options
+
 ## Installation & Usage
 
 1. Signup to https://api.rtt.io
@@ -81,6 +106,15 @@ sensor:
         sensor_name: My Custom Journey # this will appear as 'sensor.my_custom_journey'
         time_offset:
           minutes: 20 # This will display departures from now+20 minutes - useful if the station is 20 minutes travel/walk away.
+      - origin: CLJ
+        # destination is optional. If omitted, all trains from the origin station will be monitored
+        platforms_of_interest:
+          - '10'
+          - '11' # Only monitor trains departing from platforms 10 and 11
+        journey_data_for_next_X_trains: 3
+      - origin: WAT
+        # Monitor all trains from Waterloo (no destination, no platform filter)
+        journey_data_for_next_X_trains: 10
 ```
 5. Restart HA
 6. Your `sensor` will be named something like `sensor.next_train_from_wal_to_wat` (unless you specified a `sensor_name`) for each query you defined in your configuration.
