@@ -7,20 +7,21 @@ blueprint:
   domain: automation
 
   input:
+
     rtt_username:
       name: RTT API Username
       selector:
-        text
+        text: {}
 
     rtt_password:
       name: RTT API Password
       selector:
         text:
-        type: password
+          type: password
 
     days:
       name: Days of Week
-      description: "Automation only runs on the selected days"
+      description: "Automation only runs on these days"
       selector:
         select:
           multiple: true
@@ -37,22 +38,22 @@ blueprint:
     morning_uid:
       name: Morning Train Service UID
       selector:
-        text
+        text: {}
 
     morning_trigger_time:
       name: Morning Check Time
       selector:
-        time
+        time: {}
 
     evening_uid:
       name: Evening Train Service UID
       selector:
-        text
+        text: {}
 
     evening_trigger_time:
       name: Evening Check Time
       selector:
-        time
+        time: {}
 
     notify_device:
       name: Send Notifications To
