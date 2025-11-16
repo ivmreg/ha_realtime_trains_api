@@ -1,8 +1,9 @@
 blueprint:
-  name: Track Train by Service UID (AM & PM) – REST Command v2
+  name: Track Train by Service UID (AM & PM) – REST Command (Any Notify)
   description: >
     Queries RTT timetable+realtime overlays for two services (AM and PM) using rest_command,
-    checks platform, delay, cancellation, and sends a notification. Only runs on selected weekdays.
+    checks platform, delay, cancellation, and sends a notification to any notify entity.
+    Only runs on selected weekdays.
   domain: automation
 
   input:
@@ -53,12 +54,12 @@ blueprint:
       selector:
         time: {}
 
-    notify_device:
-      name: Send Notifications To
+    notify_entity:
+      name: Notification Target
+      description: "Choose any notify entity (mobile app, Telegram, email, etc.)"
       selector:
-        device:
-          filter:
-            - integration: mobile_app
+        entity:
+          domain: notify
 
 trigger:
   - platform: time
@@ -85,7 +86,6 @@ variables:
   today: "{{ now().strftime('%Y/%m/%d') }}"
   rtt_user: "{{ inputs.rtt_username }}"
   rtt_pass: "{{ inputs.rtt_password }}"
-  target_device: "{{ inputs.notify_device }}"
 
 action:
   - service: rest_command.rtt_service
@@ -113,33 +113,30 @@ action:
   - choose:
       - conditions: "{{ is_cancelled }}"
         sequence:
-          - device_id: "{{ target_device }}"
-            domain: mobile_app
-            type: notify
-            message: >
-              ❌ Train {{ service_uid }} is CANCELLED
-              Scheduled: {{ gbtt_departure }}
-              Reason: {{ cancel_reason }}
+          - service: !input notify_entity
+            data:
+              message: >
+                ❌ Train {{ service_uid }} is CANCELLED
+                Scheduled: {{ gbtt_departure }}
+                Reason: {{ cancel_reason }}
 
       - conditions: "{{ delay_min | int > 0 }}"
         sequence:
-          - device_id: "{{ target_device }}"
-            domain: mobile_app
-            type: notify
-            message: >
-              ⚠️ Train {{ service_uid }} is DELAYED
-              Scheduled: {{ gbtt_departure }}
-              Expected: {{ realtime_departure }}
-              Delay: {{ delay_min }} min
-              Platform: {{ platform }}
+          - service: !input notify_entity
+            data:
+              message: >
+                ⚠️ Train {{ service_uid }} is DELAYED
+                Scheduled: {{ gbtt_departure }}
+                Expected: {{ realtime_departure }}
+                Delay: {{ delay_min }} min
+                Platform: {{ platform }}
 
     default:
-      - device_id: "{{ target_device }}"
-        domain: mobile_app
-        type: notify
-        message: >
-          ✅ Train {{ service_uid }} ON TIME
-          Departure: {{ gbtt_departure }}
-          Platform: {{ platform }}
+      - service: !input notify_entity
+        data:
+          message: >
+            ✅ Train {{ service_uid }} ON TIME
+            Departure: {{ gbtt_departure }}
+            Platform: {{ platform }}
 
 mode: single
