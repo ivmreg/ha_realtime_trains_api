@@ -62,27 +62,30 @@ blueprint:
 
 trigger:
   - platform: time
-    at: !input morning_trigger_time
+    at: "{{ inputs.morning_trigger_time }}"
     id: morning
 
   - platform: time
-    at: !input evening_trigger_time
+    at: "{{ inputs.evening_trigger_time }}"
     id: evening
 
 condition:
   - condition: template
     value_template: >
-      {{ now().strftime('%A') in !input days }}
+      {{ now().strftime('%A') in inputs.days }}
 
 variables:
   service_uid: >
-    {% if trigger.id == "morning" %}
-      {{ !input morning_uid }}
+    {% if trigger.id == 'morning' %}
+      {{ inputs.morning_uid }}
     {% else %}
-      {{ !input evening_uid }}
+      {{ inputs.evening_uid }}
     {% endif %}
 
   today: "{{ now().strftime('%Y/%m/%d') }}"
+  rtt_user: "{{ inputs.rtt_username }}"
+  rtt_pass: "{{ inputs.rtt_password }}"
+  target_device: "{{ inputs.notify_device }}"
 
 action:
   - service: rest_command.rtt_service
@@ -110,7 +113,7 @@ action:
   - choose:
       - conditions: "{{ is_cancelled }}"
         sequence:
-          - device_id: !input notify_device
+          - device_id: "{{ target_device }}"
             domain: mobile_app
             type: notify
             message: >
@@ -120,7 +123,7 @@ action:
 
       - conditions: "{{ delay_min | int > 0 }}"
         sequence:
-          - device_id: !input notify_device
+          - device_id: "{{ target_device }}"
             domain: mobile_app
             type: notify
             message: >
@@ -131,7 +134,7 @@ action:
               Platform: {{ platform }}
 
     default:
-      - device_id: !input notify_device
+      - device_id: "{{ target_device }}"
         domain: mobile_app
         type: notify
         message: >
