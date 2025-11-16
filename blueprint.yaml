@@ -1,0 +1,158 @@
+blueprint:
+  name: Track Train by Service UID (AM & PM) – With Weekday Control
+  description: >
+    Queries RTT timetable+realtime overlays for two services (AM and PM),
+    checks platform, delay, cancellation, and sends a notification.
+    Only runs on configured weekdays.
+  domain: automation
+
+  input:
+    rtt_username:
+      name: RTT API Username
+      selector:
+        text
+
+    rtt_password:
+      name: RTT API Password
+      selector:
+        text:
+        type: password
+
+    days:
+      name: Days of Week
+      description: "Automation only runs on the selected days"
+      selector:
+        select:
+          multiple: true
+          mode: list
+          options:
+            - Monday
+            - Tuesday
+            - Wednesday
+            - Thursday
+            - Friday
+            - Saturday
+            - Sunday
+
+    morning_uid:
+      name: Morning Train Service UID
+      selector:
+        text
+
+    morning_trigger_time:
+      name: Morning Check Time
+      selector:
+        time
+
+    evening_uid:
+      name: Evening Train Service UID
+      selector:
+        text
+
+    evening_trigger_time:
+      name: Evening Check Time
+      selector:
+        time
+
+    notify_device:
+      name: Send Notifications To
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+
+trigger:
+  - platform: time
+    at: !input morning_trigger_time
+    id: morning
+
+  - platform: time
+    at: !input evening_trigger_time
+    id: evening
+
+# --- NEW WEEKDAY FILTER ---
+condition:
+  - condition: template
+    value_template: >
+      {% set allowed = iif(days is defined, days, []) %}
+      {{ now().strftime('%A') in allowed }}
+
+variables:
+  rtt_user: !input rtt_username
+  rtt_pass: !input rtt_password
+  morning_uid: !input morning_uid
+  evening_uid: !input evening_uid
+  target_device: !input notify_device
+  days: !input days
+
+  # Which train to check?
+  service_uid: >
+    {% if trigger.id == "morning" %}
+      {{ morning_uid }}
+    {% else %}
+      {{ evening_uid }}
+    {% endif %}
+
+  today: "{{ now().strftime('%Y/%m/%d') }}"
+  api_url: >
+    https://api.rtt.io/api/v1/json/service/{{ service_uid }}/{{ today }}
+
+action:
+  - alias: "Fetch RTT Service Info"
+    variables:
+      response: >
+        {% set url = api_url %}
+        {% set auth = (rtt_user ~ ':' ~ rtt_pass) | b64encode %}
+        {{ url | fetch(method='GET', headers={'Authorization': 'Basic ' ~ auth}) }}
+
+      loc: "{{ response.get('locations', [])[0] }}"
+      is_cancelled: "{{ loc.isCancelled | default(false) }}"
+      plat: "{{ loc.realtimePlatform or loc.platform | default('—') }}"
+      gbtt: "{{ loc.gbttDeparture | default('—') }}"
+      rt: "{{ loc.realtimeDeparture | default('—') }}"
+
+      # Delay (mins)
+      delay_min: >
+        {% if loc.gbttDeparture and loc.realtimeDeparture %}
+          {{ (
+            strptime(loc.realtimeDeparture, '%H:%M') -
+            strptime(loc.gbttDeparture, '%H:%M')
+          ).total_seconds() / 60 | round(0) }}
+        {% else %}
+          0
+        {% endif %}
+
+  - choose:
+
+      - conditions: "{{ is_cancelled }}"
+        sequence:
+          - device_id: "{{ target_device }}"
+            domain: mobile_app
+            type: notify
+            message: >
+              ❌ Train {{ service_uid }} is CANCELLED  
+              Scheduled: {{ gbtt }}  
+              Reason: {{ loc.cancelReason | default('Unknown') }}
+
+      - conditions: "{{ delay_min | int > 0 }}"
+        sequence:
+          - device_id: "{{ target_device }}"
+            domain: mobile_app
+            type: notify
+            message: >
+              ⚠️ Train {{ service_uid }} is DELAYED  
+              Scheduled: {{ gbtt }}  
+              Expected: {{ rt }}  
+              Delay: {{ delay_min }} min  
+              Platform: {{ plat }}
+
+    default:
+      - device_id: "{{ target_device }}"
+        domain: mobile_app
+        type: notify
+        message: >
+          ✅ Train {{ service_uid }} ON TIME  
+          Departure: {{ gbtt }}  
+          Platform: {{ plat }}
+
+mode: single
