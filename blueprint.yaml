@@ -103,7 +103,7 @@ action:
     variables:
       response: >
         {% set url = api_url %}
-        {% set auth = (rtt_user ~ ':' ~ rtt_pass) | b64encode %}
+        {% set auth = (rtt_user ~ ':' ~ rtt_pass) | base64_encode  %}
         {{ url | fetch(method='GET', headers={'Authorization': 'Basic ' ~ auth}) }}
 
       loc: "{{ response.get('locations', [])[0] }}"
