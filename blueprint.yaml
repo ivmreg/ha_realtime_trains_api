@@ -1,5 +1,5 @@
 blueprint:
-  name: Track Train by Service UID (AM & PM) – REST Command
+  name: Track Train by Service UID (AM & PM) – REST Command v2
   description: >
     Queries RTT timetable+realtime overlays for two services (AM and PM) using rest_command,
     checks platform, delay, cancellation, and sends a notification. Only runs on selected weekdays.
