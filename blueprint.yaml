@@ -1,13 +1,11 @@
 blueprint:
-  name: Track Train by Service UID (AM & PM) – With Weekday Control
+  name: Track Train by Service UID (AM & PM) – REST Command
   description: >
-    Queries RTT timetable+realtime overlays for two services (AM and PM),
-    checks platform, delay, cancellation, and sends a notification.
-    Only runs on configured weekdays.
+    Queries RTT timetable+realtime overlays for two services (AM and PM) using rest_command,
+    checks platform, delay, cancellation, and sends a notification. Only runs on selected weekdays.
   domain: automation
 
   input:
-
     rtt_username:
       name: RTT API Username
       selector:
@@ -71,89 +69,74 @@ trigger:
     at: !input evening_trigger_time
     id: evening
 
-# --- NEW WEEKDAY FILTER ---
 condition:
   - condition: template
     value_template: >
-      {% set allowed = iif(days is defined, days, []) %}
-      {{ now().strftime('%A') in allowed }}
+      {{ now().strftime('%A') in !input days }}
 
 variables:
-  rtt_user: !input rtt_username
-  rtt_pass: !input rtt_password
-  morning_uid: !input morning_uid
-  evening_uid: !input evening_uid
-  target_device: !input notify_device
-  days: !input days
-
-  # Which train to check?
   service_uid: >
     {% if trigger.id == "morning" %}
-      {{ morning_uid }}
+      {{ !input morning_uid }}
     {% else %}
-      {{ evening_uid }}
+      {{ !input evening_uid }}
     {% endif %}
 
   today: "{{ now().strftime('%Y/%m/%d') }}"
-  api_url: >
-    https://api.rtt.io/api/v1/json/service/{{ service_uid }}/{{ today }}
 
 action:
-  - alias: "Fetch RTT Service Info"
-    variables:
-      response: >
-        {% set url = api_url %}
-        {% set auth = (rtt_user ~ ':' ~ rtt_pass) | base64_encode  %}
-        {{ url | fetch(method='GET', headers={'Authorization': 'Basic ' ~ auth}) }}
+  - service: rest_command.rtt_service
+    data:
+      uid: "{{ service_uid }}"
+      date: "{{ today }}"
+    response_variable: rtt_response
 
-      loc: "{{ response.get('locations', [])[0] }}"
-      is_cancelled: "{{ loc.isCancelled | default(false) }}"
-      plat: "{{ loc.realtimePlatform or loc.platform | default('—') }}"
-      gbtt: "{{ loc.gbttDeparture | default('—') }}"
-      rt: "{{ loc.realtimeDeparture | default('—') }}"
-
-      # Delay (mins)
+  - variables:
+      rtt_json: "{{ rtt_response.content | from_json }}"
+      first_stop: "{{ rtt_json.locations[0] }}"
+      is_cancelled: "{{ first_stop.isCancelled | default(false) }}"
+      cancel_reason: "{{ first_stop.cancelReason | default('Unknown') }}"
+      platform: "{{ first_stop.realtimePlatform or first_stop.platform | default('—') }}"
+      gbtt_departure: "{{ first_stop.gbttDeparture | default('—') }}"
+      realtime_departure: "{{ first_stop.realtimeDeparture | default('—') }}"
       delay_min: >
-        {% if loc.gbttDeparture and loc.realtimeDeparture %}
-          {{ (
-            strptime(loc.realtimeDeparture, '%H:%M') -
-            strptime(loc.gbttDeparture, '%H:%M')
-          ).total_seconds() / 60 | round(0) }}
+        {% if first_stop.gbttDeparture and first_stop.realtimeDeparture %}
+          {{ (strptime(first_stop.realtimeDeparture, '%H:%M') -
+              strptime(first_stop.gbttDeparture, '%H:%M')).total_seconds() / 60 | round(0) }}
         {% else %}
           0
         {% endif %}
 
   - choose:
-
       - conditions: "{{ is_cancelled }}"
         sequence:
-          - device_id: "{{ target_device }}"
+          - device_id: !input notify_device
             domain: mobile_app
             type: notify
             message: >
-              ❌ Train {{ service_uid }} is CANCELLED  
-              Scheduled: {{ gbtt }}  
-              Reason: {{ loc.cancelReason | default('Unknown') }}
+              ❌ Train {{ service_uid }} is CANCELLED
+              Scheduled: {{ gbtt_departure }}
+              Reason: {{ cancel_reason }}
 
       - conditions: "{{ delay_min | int > 0 }}"
         sequence:
-          - device_id: "{{ target_device }}"
+          - device_id: !input notify_device
             domain: mobile_app
             type: notify
             message: >
-              ⚠️ Train {{ service_uid }} is DELAYED  
-              Scheduled: {{ gbtt }}  
-              Expected: {{ rt }}  
-              Delay: {{ delay_min }} min  
-              Platform: {{ plat }}
+              ⚠️ Train {{ service_uid }} is DELAYED
+              Scheduled: {{ gbtt_departure }}
+              Expected: {{ realtime_departure }}
+              Delay: {{ delay_min }} min
+              Platform: {{ platform }}
 
     default:
-      - device_id: "{{ target_device }}"
+      - device_id: !input notify_device
         domain: mobile_app
         type: notify
         message: >
-          ✅ Train {{ service_uid }} ON TIME  
-          Departure: {{ gbtt }}  
-          Platform: {{ plat }}
+          ✅ Train {{ service_uid }} ON TIME
+          Departure: {{ gbtt_departure }}
+          Platform: {{ platform }}
 
 mode: single
