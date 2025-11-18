@@ -90,7 +90,7 @@ action:
     response_variable: rtt_response
 
   - variables:
-      rtt_json: "{{ rtt_response.content | from_json }}"
+      rtt_json: "{{ rtt_response.content | from_json if rtt_response.content is string else rtt_response.content }}"
       # Assuming the first location is the one we care about (Origin)
       first_stop: "{{ rtt_json.locations[0] }}"
       # RTT API uses 'displayAs' to indicate cancellation (CANCELLED_CALL)
