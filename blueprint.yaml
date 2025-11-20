@@ -30,6 +30,12 @@ blueprint:
       selector:
         text: {}
 
+    morning_station:
+      name: Morning Departure Station (CRS Code)
+      description: "The station code (e.g., BLK) where you board the morning train."
+      selector:
+        text: {}
+
     morning_trigger_time:
       name: Morning Check Time
       selector:
@@ -37,6 +43,12 @@ blueprint:
 
     evening_uid:
       name: Evening Train Service UID
+      selector:
+        text: {}
+
+    evening_station:
+      name: Evening Departure Station (CRS Code)
+      description: "The station code (e.g., LBG) where you board the evening train."
       selector:
         text: {}
 
@@ -70,7 +82,9 @@ condition:
 variables:
   days_input: !input days
   morning_uid: !input morning_uid
+  morning_station: !input morning_station
   evening_uid: !input evening_uid
+  evening_station: !input evening_station
   notify_device: !input notify_device
   
   service_uid: >
@@ -78,6 +92,13 @@ variables:
       {{ morning_uid }}
     {% else %}
       {{ evening_uid }}
+    {% endif %}
+
+  target_station: >
+    {% if trigger.id == 'morning' %}
+      {{ morning_station }}
+    {% else %}
+      {{ evening_station }}
     {% endif %}
 
   today: "{{ now().strftime('%Y/%m/%d') }}"
@@ -91,8 +112,14 @@ action:
 
   - variables:
       rtt_json: "{{ rtt_response.content | from_json if rtt_response.content is string else rtt_response.content }}"
-      # Assuming the first location is the one we care about (Origin)
-      first_stop: "{{ rtt_json.locations[0] }}"
+      
+      # Find the specific station in the locations list
+      station_data: >
+        {{ rtt_json.locations | selectattr('crs', 'eq', target_station) | first | default(none) }}
+      
+      # Fallback to first stop (Origin) if station not found or not specified
+      first_stop: "{{ station_data if station_data else rtt_json.locations[0] }}"
+      
       # RTT API uses 'displayAs' to indicate cancellation (CANCELLED_CALL)
       is_cancelled: "{{ first_stop.displayAs == 'CANCELLED_CALL' or first_stop.cancelReasonCode is defined }}"
       cancel_reason: "{{ first_stop.cancelReasonShortText | default('Unknown') }}"
