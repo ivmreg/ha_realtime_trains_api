@@ -514,66 +514,71 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         stopsOfInterest = []
         stopCount = -1  # origin counts as first stop in the returned json
         found = False
+        found_start = False
         for stop in data['locations']:
-            if self._journey_end and stop['crs'] == self._journey_end and stop['displayAs'] != 'ORIGIN':
-                scheduled_arrival_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
-                estimated_arrival_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+            if stop['crs'] == self._journey_start:
+                found_start = True
 
-                if scheduled_arrival_str is not None:
-                    scheduled_arrival = _timestamp(scheduled_arrival_str, scheduled_departure)
-                elif estimated_arrival_str is not None:
-                    scheduled_arrival = _timestamp(estimated_arrival_str, scheduled_departure)
-                else:
-                    scheduled_arrival = scheduled_departure
+            if found_start and stop['crs'] != self._journey_start:
+                if self._journey_end and stop['crs'] == self._journey_end and stop['displayAs'] != 'ORIGIN':
+                    scheduled_arrival_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
+                    estimated_arrival_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
 
-                if estimated_arrival_str is not None:
-                    estimated_arrival = _timestamp(estimated_arrival_str, scheduled_departure)
-                else:
-                    estimated_arrival = scheduled_arrival
+                    if scheduled_arrival_str is not None:
+                        scheduled_arrival = _timestamp(scheduled_arrival_str, scheduled_departure)
+                    elif estimated_arrival_str is not None:
+                        scheduled_arrival = _timestamp(estimated_arrival_str, scheduled_departure)
+                    else:
+                        scheduled_arrival = scheduled_departure
 
-                status = "OK"
-                if 'CANCELLED' in stop['displayAs']:
-                    status = "Cancelled"
-                elif estimated_arrival > scheduled_arrival:
-                    status = "Delayed"
+                    if estimated_arrival_str is not None:
+                        estimated_arrival = _timestamp(estimated_arrival_str, scheduled_departure)
+                    else:
+                        estimated_arrival = scheduled_arrival
 
-                newtrain = {
-                    "stops_of_interest": stopsOfInterest,
-                    "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
-                    "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
-                    "journey_time_mins": _delta_secs(estimated_arrival, estimated_departure) // 60,
-                    "stops": stopCount,
-                    "status": status,
-                }
-                train.update(newtrain)
-                found = True
-                break
-            elif stop['crs'] in self._stops_of_interest and stop['isPublicCall']:
-                scheduled_stop_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
-                estimated_stop_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+                    status = "OK"
+                    if 'CANCELLED' in stop['displayAs']:
+                        status = "Cancelled"
+                    elif estimated_arrival > scheduled_arrival:
+                        status = "Delayed"
 
-                if scheduled_stop_str is not None:
-                    scheduled_stop = _timestamp(scheduled_stop_str, scheduled_departure)
-                elif estimated_stop_str is not None:
-                    scheduled_stop = _timestamp(estimated_stop_str, scheduled_departure)
-                else:
-                    scheduled_stop = scheduled_departure
-
-                if estimated_stop_str is not None:
-                    estimated_stop = _timestamp(estimated_stop_str, scheduled_departure)
-                else:
-                    estimated_stop = scheduled_stop
-
-                stopsOfInterest.append(
-                    {
-                        "stop": stop['crs'],
-                        "name": stop['description'],
-                        "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
-                        "estimate_stop": estimated_stop.strftime(STRFFORMAT),
-                        "journey_time_mins": _delta_secs(estimated_stop, estimated_departure) // 60,
+                    newtrain = {
+                        "stops_of_interest": stopsOfInterest,
+                        "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
+                        "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
+                        "journey_time_mins": _delta_secs(estimated_arrival, estimated_departure) // 60,
                         "stops": stopCount,
+                        "status": status,
                     }
-                )
+                    train.update(newtrain)
+                    found = True
+                    break
+                elif (not self._stops_of_interest or stop['crs'] in self._stops_of_interest) and stop['isPublicCall']:
+                    scheduled_stop_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
+                    estimated_stop_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+
+                    if scheduled_stop_str is not None:
+                        scheduled_stop = _timestamp(scheduled_stop_str, scheduled_departure)
+                    elif estimated_stop_str is not None:
+                        scheduled_stop = _timestamp(estimated_stop_str, scheduled_departure)
+                    else:
+                        scheduled_stop = scheduled_departure
+
+                    if estimated_stop_str is not None:
+                        estimated_stop = _timestamp(estimated_stop_str, scheduled_departure)
+                    else:
+                        estimated_stop = scheduled_stop
+
+                    stopsOfInterest.append(
+                        {
+                            "stop": stop['crs'],
+                            "name": stop['description'],
+                            "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
+                            "estimate_stop": estimated_stop.strftime(STRFFORMAT),
+                            "journey_time_mins": _delta_secs(estimated_stop, estimated_departure) // 60,
+                            "stops": stopCount,
+                        }
+                    )
             stopCount += 1
         
         # If no destination specified, just add stops of interest without destination arrival info
