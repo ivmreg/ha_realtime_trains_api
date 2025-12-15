@@ -1,5 +1,5 @@
 blueprint:
-  name: Track Train by Schedule (AM & PM) – REST Command v4
+  name: Track Train by Schedule (AM & PM) – REST Command v5
   description: >
     Queries RTT station departures to find a specific train by time/destination.
     Supports multiple backup trains (comma-separated times), conditional detailed lookups,
@@ -227,7 +227,7 @@ action:
       is_cancelled: "{{ display_as == 'CANCELLED_CALL' }}"
       
       delay_min: >
-        {% if gbtt_departure != '—' and realtime_departure != '—' %}
+        {% if gbtt_departure not in ['—', ''] and realtime_departure not in ['—', ''] %}
           {% set scheduled = strptime(gbtt_departure, '%H%M') %}
           {% set actual = strptime(realtime_departure, '%H%M') %}
           {% if scheduled and actual %}
