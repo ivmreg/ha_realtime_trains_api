@@ -1,5 +1,5 @@
 blueprint:
-  name: Track Train by Schedule (AM & PM) – REST Command v6
+  name: Track Train by Schedule (AM & PM) – REST Command v7
   description: >
     Queries RTT station departures to find a specific train by time/destination.
     Supports multiple backup trains (comma-separated times), conditional detailed lookups,
@@ -211,8 +211,8 @@ action:
       
       delay_min: >
         {% if sched and actual %}
-          {% set s = strptime(sched, '%H%M') %}
-          {% set a = strptime(actual, '%H%M') %}
+          {% set s = strptime(sched | string, '%H%M') %}
+          {% set a = strptime(actual | string, '%H%M') %}
           {% if s and a %}
             {% set d = (a - s).total_seconds() / 60 %}
             {{ (d + 1440 if d < -600 else d) | int }}
