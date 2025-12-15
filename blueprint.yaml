@@ -1,11 +1,12 @@
 blueprint:
-  name: Track Train by Service UID (AM & PM) – REST Command v2
+  name: Track Train by Schedule (AM & PM) – REST Command v4
   description: >
-    Queries RTT timetable+realtime overlays for two services (AM and PM) using rest_command,
-    checks platform, delay, cancellation, and sends a notification to a mobile device.
-    Only runs on selected weekdays.
+    Queries RTT station departures to find a specific train by time/destination.
+    Supports multiple backup trains (comma-separated times), conditional detailed lookups,
+    and notification preferences (only on issues, include train identity, platform changes).
     
-    Requires a rest_command.rtt_service to be defined in configuration.yaml that returns the JSON response from RTT API.
+    Requires ONE rest_command in configuration.yaml (rtt_service is optional):
+    1. rtt_search: https://api.rtt.io/api/v1/json/search/{{ origin }}/to/{{ destination }}/{{ date }}/{{ time }}
   domain: automation
 
   input:
@@ -25,35 +26,51 @@ blueprint:
             - Saturday
             - Sunday
 
-    morning_uid:
-      name: Morning Train Service UID
+    morning_station:
+      name: Morning Origin Station (CRS)
+      description: "Where you board (e.g., BKH)"
       selector:
         text: {}
 
-    morning_station:
-      name: Morning Departure Station (CRS Code)
-      description: "The station code (e.g., BLK) where you board the morning train."
+    morning_destination:
+      name: Morning Destination Station (CRS)
+      description: "Where the train is going (e.g., CST)"
+      selector:
+        text: {}
+
+    morning_scheduled:
+      name: Morning Scheduled Time(s) (HHMM)
+      description: "Comma-separated list of times to check in order (e.g., 0730,0745,0800). Will report on first available train."
       selector:
         text: {}
 
     morning_trigger_time:
       name: Morning Check Time
+      description: "When to run the check (e.g., 07:20)"
       selector:
         time: {}
 
-    evening_uid:
-      name: Evening Train Service UID
+    evening_station:
+      name: Evening Origin Station (CRS)
+      description: "Where you board (e.g., CST)"
       selector:
         text: {}
 
-    evening_station:
-      name: Evening Departure Station (CRS Code)
-      description: "The station code (e.g., LBG) where you board the evening train."
+    evening_destination:
+      name: Evening Destination Station (CRS)
+      description: "Where the train is going (e.g., BKH)"
+      selector:
+        text: {}
+
+    evening_scheduled:
+      name: Evening Scheduled Time(s) (HHMM)
+      description: "Comma-separated list of times to check in order (e.g., 1717,1722,1730). Will report on first available train."
       selector:
         text: {}
 
     evening_trigger_time:
       name: Evening Check Time
+      description: "When to run the check (e.g., 16:50)"
       selector:
         time: {}
 
@@ -63,6 +80,20 @@ blueprint:
         device:
           filter:
             - integration: mobile_app
+
+    notify_only_on_issues:
+      name: Notify Only On Issues
+      description: "If enabled, only send notifications for cancellations, delays, or platform changes. Suppress 'on time' messages."
+      default: false
+      selector:
+        boolean: {}
+
+    fetch_detailed_info:
+      name: Fetch Detailed Service Info
+      description: "If enabled, makes an additional API call to get full calling pattern. Only needed for advanced use cases."
+      default: false
+      selector:
+        boolean: {}
 
 trigger:
   - platform: time
@@ -81,64 +112,150 @@ condition:
 
 variables:
   days_input: !input days
-  morning_uid: !input morning_uid
-  morning_station: !input morning_station
-  evening_uid: !input evening_uid
-  evening_station: !input evening_station
   notify_device: !input notify_device
+  notify_only_on_issues: !input notify_only_on_issues
+  fetch_detailed_info: !input fetch_detailed_info
   
-  service_uid: >
-    {% if trigger.id == 'morning' %}
-      {{ morning_uid }}
-    {% else %}
-      {{ evening_uid }}
-    {% endif %}
+  # Inputs
+  morning_origin: !input morning_station
+  morning_dest: !input morning_destination
+  morning_times_raw: !input morning_scheduled
+  
+  evening_origin: !input evening_station
+  evening_dest: !input evening_destination
+  evening_times_raw: !input evening_scheduled
 
-  target_station: >
-    {% if trigger.id == 'morning' %}
-      {{ morning_station }}
-    {% else %}
-      {{ evening_station }}
-    {% endif %}
+  # Parse comma-separated times into lists
+  morning_times: >
+    {% set times = morning_times_raw.split(',') %}
+    {{ times | map('trim') | map('replace', ':', '') | list }}
+  
+  evening_times: >
+    {% set times = evening_times_raw.split(',') %}
+    {{ times | map('trim') | map('replace', ':', '') | list }}
+
+  # Determine search parameters based on trigger
+  search_origin: >
+    {{ morning_origin if trigger.id == 'morning' else evening_origin }}
+  
+  search_dest: >
+    {{ morning_dest if trigger.id == 'morning' else evening_dest }}
+    
+  search_times: >
+    {{ morning_times if trigger.id == 'morning' else evening_times }}
 
   today: "{{ now().strftime('%Y/%m/%d') }}"
 
 action:
-  - service: rest_command.rtt_service
+  # 1. Search for the first scheduled time and find matching service from the user's list
+  - service: rest_command.rtt_search
     data:
-      uid: "{{ service_uid }}"
+      origin: "{{ search_origin }}"
+      destination: "{{ search_dest }}"
       date: "{{ today }}"
-    response_variable: rtt_response
+      time: "{{ search_times[0] }}"
+    response_variable: search_response
 
   - variables:
-      rtt_json: "{{ rtt_response.content | from_json if rtt_response.content is string else rtt_response.content }}"
-      
-      # Find the specific station in the locations list
-      station_data: >
-        {{ rtt_json.locations | selectattr('crs', 'eq', target_station) | first | default(none) }}
-      
-      # Fallback to first stop (Origin) if station not found or not specified
-      first_stop: "{{ station_data if station_data else rtt_json.locations[0] }}"
-      
-      # RTT API uses 'displayAs' to indicate cancellation (CANCELLED_CALL)
-      is_cancelled: "{{ first_stop.displayAs == 'CANCELLED_CALL' or first_stop.cancelReasonCode is defined }}"
-      cancel_reason: "{{ first_stop.cancelReasonShortText | default('Unknown') }}"
-      platform: "{{ first_stop.platform | default('—') }}"
-      gbtt_departure: "{{ first_stop.gbttBookedDeparture | default('—') }}"
-      realtime_departure: "{{ first_stop.realtimeDeparture | default('—') }}"
-      delay_min: >
-        {% if first_stop.gbttBookedDeparture and first_stop.realtimeDeparture %}
-          {% set scheduled = strptime(first_stop.gbttBookedDeparture, '%H%M') %}
-          {% set actual = strptime(first_stop.realtimeDeparture, '%H%M') %}
-          {% if scheduled and actual %}
-             {{ (actual - scheduled).total_seconds() / 60 | round(0) }}
+      search_json: "{{ search_response.content | from_json if search_response.content is string else search_response.content }}"
+      api_error: "{{ search_json.error | default(none) }}"
+
+      # From the search results, try to find the first service matching any of the requested times in order
+      matching_service: >
+        {% if api_error %}
+          {{ none }}
+        {% else %}
+          {% set ns = namespace(found=None) %}
+          {% for t in search_times %}
+            {% for service in (search_json.services or []) %}
+              {% if service.locationDetail.gbttBookedDeparture == t %}
+                {% set ns.found = service %}
+                {% break %}
+              {% endif %}
+            {% endfor %}
+            {% if ns.found %}{% break %}{% endif %}
+          {% endfor %}
+          {{ ns.found }}
+        {% endif %}
+
+      found_train: >
+        {% if matching_service %}
+          {
+            "serviceUid": "{{ matching_service.serviceUid }}",
+            "time": "{{ matching_service.locationDetail.gbttBookedDeparture }}",
+            "trainIdentity": "{{ matching_service.trainIdentity | default('N/A') }}",
+            "platform": "{{ matching_service.locationDetail.platform | default('—') }}",
+            "platformChanged": {{ matching_service.locationDetail.platformChanged | default(false) | lower }},
+            "gbttBookedDeparture": "{{ matching_service.locationDetail.gbttBookedDeparture | default('—') }}",
+            "realtimeDeparture": "{{ matching_service.locationDetail.realtimeDeparture | default('—') }}",
+            "displayAs": "{{ matching_service.locationDetail.displayAs | default('') }}",
+            "cancelReasonShortText": "{{ matching_service.locationDetail.cancelReasonShortText | default('') }}"
+          }
+        {% else %}
+          null
+        {% endif %}
+
+  # 2. If no train found and no API error, notify
+  - if:
+      - condition: template
+        value_template: "{{ found_train is none }}"
+    then:
+      - domain: mobile_app
+        type: notify
+        device_id: !input notify_device
+        message: >
+          {% if search_error %}
+            ❌ API Error: {{ search_error }}
           {% else %}
-             0
+            ❓ Could not find trains from {{ search_origin }} to {{ search_dest }} at {{ search_times | join(', ') }}.
+            Check timetable or API.
+          {% endif %}
+      - stop: "No matching service found"
+
+  # 3. Extract data from found train
+  - variables:
+      train_uid: "{{ found_train.serviceUid }}"
+      train_time: "{{ found_train.time }}"
+      train_identity: "{{ found_train.trainIdentity }}"
+      platform: "{{ found_train.platform }}"
+      platform_changed: "{{ found_train.platformChanged }}"
+      gbtt_departure: "{{ found_train.gbttBookedDeparture }}"
+      realtime_departure: "{{ found_train.realtimeDeparture }}"
+      display_as: "{{ found_train.displayAs }}"
+      cancel_reason: "{{ found_train.cancelReasonShortText }}"
+      
+      is_cancelled: "{{ display_as == 'CANCELLED_CALL' }}"
+      
+      delay_min: >
+        {% if gbtt_departure != '—' and realtime_departure != '—' %}
+          {% set scheduled = strptime(gbtt_departure, '%H%M') %}
+          {% set actual = strptime(realtime_departure, '%H%M') %}
+          {% if scheduled and actual %}
+            {% set diff = (actual - scheduled).total_seconds() / 60 %}
+            {% if diff < -600 %}
+              {{ (diff + 1440) | round(0) | int }}
+            {% else %}
+              {{ diff | round(0) | int }}
+            {% endif %}
+          {% else %}
+            0
           {% endif %}
         {% else %}
           0
         {% endif %}
 
+  # 4. Optionally fetch detailed service info
+  - if:
+      - condition: template
+        value_template: "{{ fetch_detailed_info }}"
+    then:
+      - service: rest_command.rtt_service
+        data:
+          uid: "{{ train_uid }}"
+          date: "{{ today }}"
+        response_variable: rtt_response
+
+  # 5. Build and send notification
   - choose:
       - conditions: "{{ is_cancelled }}"
         sequence:
@@ -146,9 +263,8 @@ action:
             type: notify
             device_id: !input notify_device
             message: >
-              ❌ Train {{ service_uid }} is CANCELLED
-              Scheduled: {{ gbtt_departure }}
-              Reason: {{ cancel_reason }}
+              ❌ Train {{ train_time }} ({{ train_identity }}) is CANCELLED
+              Reason: {{ cancel_reason if cancel_reason else 'Unknown' }}
 
       - conditions: "{{ delay_min | int > 0 }}"
         sequence:
@@ -156,19 +272,31 @@ action:
             type: notify
             device_id: !input notify_device
             message: >
-              ⚠️ Train {{ service_uid }} is DELAYED
-              Scheduled: {{ gbtt_departure }}
+              ⚠️ Train {{ train_time }} ({{ train_identity }}) is DELAYED
               Expected: {{ realtime_departure }}
               Delay: {{ delay_min }} min
-              Platform: {{ platform }}
+              Platform: {{ platform }}{% if platform_changed %} (⚠️ CHANGED){% endif %}
+
+      - conditions: "{{ platform_changed and delay_min | int <= 0 and not is_cancelled }}"
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            message: >
+              ⚠️ Train {{ train_time }} ({{ train_identity }}) - PLATFORM CHANGED
+              New Platform: {{ platform }}
+              Departure: {{ realtime_departure }}
 
     default:
-      - domain: mobile_app
-        type: notify
-        device_id: !input notify_device
-        message: >
-          ✅ Train {{ service_uid }} ON TIME
-          Departure: {{ gbtt_departure }}
-          Platform: {{ platform }}
+      - if:
+          - condition: template
+            value_template: "{{ not notify_only_on_issues }}"
+        then:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            message: >
+              ✅ Train {{ train_time }} ({{ train_identity }}) ON TIME
+              Platform: {{ platform }}
 
 mode: single
