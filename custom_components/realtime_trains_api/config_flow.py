@@ -23,6 +23,7 @@ from .const import (
     CONF_START,
     CONF_STOPS_OF_INTEREST,
     CONF_TIMEOFFSET,
+    CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
@@ -88,6 +89,11 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
 
     if not origin:
         errors[CONF_START] = "required"
+    elif not CRS_CODE_PATTERN.match(origin):
+        errors[CONF_START] = "invalid_crs"
+
+    if destination and not CRS_CODE_PATTERN.match(destination):
+        errors[CONF_END] = "invalid_crs"
 
     sensor_name_raw = user_input.get(CONF_SENSORNAME)
     sensor_name = sensor_name_raw.strip() if isinstance(sensor_name_raw, str) else None
@@ -102,15 +108,21 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
     if time_offset < 0:
         time_offset = 0
 
-    stops = _split_csv(user_input.get(FIELD_STOPS, ""))
+    stops_raw = _split_csv(user_input.get(FIELD_STOPS, ""))
+    stops = [stop.upper() for stop in stops_raw]
+    for stop in stops:
+        if not CRS_CODE_PATTERN.match(stop):
+            errors[FIELD_STOPS] = "invalid_crs"
+            break
+
     platforms = _split_csv(user_input.get(FIELD_PLATFORMS, ""))
 
     add_another = bool(user_input.get(FIELD_ADD_ANOTHER))
 
     query = {
         CONF_SENSORNAME: sensor_name,
-    CONF_START: origin,
-    CONF_END: destination,
+        CONF_START: origin,
+        CONF_END: destination,
         CONF_JOURNEYDATA: journey_data,
         CONF_TIMEOFFSET: time_offset,
         CONF_STOPS_OF_INTEREST: stops,
