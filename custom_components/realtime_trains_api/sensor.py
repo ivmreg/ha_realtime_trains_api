@@ -612,7 +612,14 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             )
 
         if last_report_station is not None:
-            last_report_time = _timestamp(last_report_time_str, scheduled_departure) if last_report_time_str else None
+            if last_report_time_str:
+                # Use the service run date (midnight of the scheduled departure date)
+                # as the baseline so that times earlier than the journey-start
+                # departure time are not incorrectly rolled to the next day.
+                service_run_date = scheduled_departure.replace(hour=0, minute=0, second=0, microsecond=0)
+                last_report_time = _timestamp(last_report_time_str, service_run_date)
+            else:
+                last_report_time = None
             train["last_report_station"] = last_report_station
             train["last_report_type"] = last_report_type
             train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
