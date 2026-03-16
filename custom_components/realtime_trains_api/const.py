@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta
 
 DOMAIN = "realtime_trains_api"
@@ -17,3 +18,5 @@ CONF_SENSORNAME = "sensor_name"
 CONF_TIMEOFFSET = "time_offset"
 CONF_STOPS_OF_INTEREST = "stops_of_interest"
 CONF_PLATFORMS_OF_INTEREST = "platforms_of_interest"
+
+CRS_CODE_PATTERN = re.compile(r"^[A-Z]{3}$")
