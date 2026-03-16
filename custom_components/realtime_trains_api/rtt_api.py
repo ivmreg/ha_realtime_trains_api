@@ -73,11 +73,14 @@ class RealtimeTrainsApiClient:
             if response.status == 403:
                 raise RealtimeTrainsApiAuthError("Credentials invalid") from None
             if response.status == 404:
+                _LOGGER.debug("Endpoint returned 404 for path %s", path)
                 raise RealtimeTrainsApiNotFoundError(
-                    f"Endpoint returned 404 for path {path}"
+                    "Endpoint returned 404"
                 ) from None
             body = await response.text()
-            message = body[:200] if body else ""
+            _LOGGER.debug(
+                "Unexpected status %s for path %s: %s", response.status, path, body
+            )
             raise RealtimeTrainsApiError(
-                f"Unexpected status {response.status} for path {path}: {message}"
+                f"Unexpected status {response.status}"
             )
