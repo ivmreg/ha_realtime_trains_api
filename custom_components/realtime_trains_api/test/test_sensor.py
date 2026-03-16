@@ -22,6 +22,6 @@ def test_to_colonseparatedtime_whitespace():
     assert _to_colonseparatedtime("\t1200\n") == "12:00"
 
 def test_to_colonseparatedtime_longer_than_4():
-    # Current implementation: return clean[:2] + ":" + clean[2:4]
-    # So "12005" -> "12:00"
-    assert _to_colonseparatedtime("12005") == "12:00"
+    # Inputs longer than 4 characters should be treated as invalid
+    # rather than silently truncated.
+    assert _to_colonseparatedtime("12005") is None
