@@ -415,7 +415,12 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             if scheduledTs is None or estimatedTs is None:
                 continue
 
-            if _delta_secs(estimatedTs, now) < self._timeoffset.total_seconds():
+            if estimated_str is not None:
+                estimatedTs = _timestamp(estimated_str, departuredate)
+            else:
+                estimatedTs = scheduledTs
+
+            if _delta_seconds(estimatedTs, now) < self._timeoffset.total_seconds():
                 continue
 
             if nextDepartureEstimatedTs is None:
@@ -432,7 +437,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     "service_uid": departure["serviceUid"],
                     "scheduled": scheduledTs.strftime(STRFFORMAT),
                     "estimated": estimatedTs.strftime(STRFFORMAT),
-                    "minutes": _delta_secs(estimatedTs, now) // 60,
+                    "minutes": _delta_seconds(estimatedTs, now) // 60,
                     "platform": platform,
                     "operator_name": departure["atocName"],
                 }
@@ -445,7 +450,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         if nextDepartureEstimatedTs is None:
             self._state = None
         else:
-            self._state = _delta_secs(nextDepartureEstimatedTs, now) // 60
+            self._state = _delta_seconds(nextDepartureEstimatedTs, now) // 60
 
         if self._autoadjustscans:
             if nextDepartureEstimatedTs is None:
@@ -550,7 +555,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                         "stops_of_interest": stopsOfInterest,
                         "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
                         "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
-                        "journey_time_mins": _delta_secs(estimated_arrival, estimated_departure) // 60,
+                        "journey_time_mins": _delta_seconds(estimated_arrival, estimated_departure) // 60,
                         "stops": stopCount,
                         "status": status,
                     }
@@ -571,7 +576,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                             "name": stop['description'],
                             "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
                             "estimate_stop": estimated_stop.strftime(STRFFORMAT),
-                            "journey_time_mins": _delta_secs(estimated_stop, estimated_departure) // 60,
+                            "journey_time_mins": _delta_seconds(estimated_stop, estimated_departure) // 60,
                             "stops": stopCount,
                         }
                     )
@@ -676,6 +681,6 @@ def _timestamp(hhmm_time_str: str, date: datetime | None = None) -> datetime:
         hhmm_datetime += timedelta(days=1)
     return hhmm_datetime
 
-def _delta_secs(hhmm_datetime_a : datetime, hhmm_datetime_b : datetime) -> float:
-    """Calculate time delta in minutes to a time in hh:mm format."""
+def _delta_seconds(hhmm_datetime_a : datetime, hhmm_datetime_b : datetime) -> float:
+    """Calculate time delta in seconds between two datetime objects."""
     return (hhmm_datetime_a - hhmm_datetime_b).total_seconds()
