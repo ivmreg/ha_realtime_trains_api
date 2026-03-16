@@ -615,10 +615,31 @@ def _parse_times(
 
     return scheduled_ts, estimated_ts
 
-def _timestamp(hhmm_time_str : str, date : datetime | None = None) -> datetime:
+def _timestamp(hhmm_time_str: str, date: datetime | None = None) -> datetime:
+    """Convert a time string to a datetime on or after the given date.
+
+    Accepts either "HH:MM" or "HHMM" formats. Raises ValueError on invalid input.
+    """
     now = cast(datetime, dt_util.now()).astimezone(TIMEZONE) if date is None else date
-    hour = int(hhmm_time_str[:2])
-    minute = int(hhmm_time_str[3:5])
+    clean = hhmm_time_str.strip()
+
+    if ":" in clean:
+        parts = clean.split(":")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(f"Invalid time format (expected HH:MM): {hhmm_time_str!r}")
+        if not parts[0].isdigit() or not parts[1].isdigit():
+            raise ValueError(f"Invalid time value (non-numeric): {hhmm_time_str!r}")
+        hour = int(parts[0])
+        minute = int(parts[1])
+    else:
+        if len(clean) != 4 or not clean.isdigit():
+            raise ValueError(f"Invalid time format (expected HHMM or HH:MM): {hhmm_time_str!r}")
+        hour = int(clean[:2])
+        minute = int(clean[2:])
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Invalid time value (out of range): {hhmm_time_str!r}")
+
     hhmm_datetime = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if hhmm_datetime < now:
         hhmm_datetime += timedelta(days=1)
