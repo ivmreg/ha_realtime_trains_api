@@ -78,8 +78,14 @@ class RealtimeTrainsApiClient:
                     f"Endpoint returned 404 for path {path}"
                 ) from None
             body = await response.text()
+            body_len = len(body)
+            body_preview = body[:200]
             _LOGGER.debug(
-                "Unexpected status %s for path %s: %s", response.status, path, body
+                "Unexpected status %s for path %s (body len=%d, preview=%r)",
+                response.status,
+                path,
+                body_len,
+                body_preview,
             )
             raise RealtimeTrainsApiError(
                 f"Unexpected status {response.status}"
