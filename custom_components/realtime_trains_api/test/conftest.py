@@ -37,14 +37,30 @@ def pytest_configure(config):
 @pytest.hookimpl(tryfirst=True)
 def pytest_pyfunc_call(pyfuncitem):
     if inspect.iscoroutinefunction(pyfuncitem.obj):
+        try:
+            previous_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            previous_loop = None
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             funcargs = pyfuncitem.funcargs
-            testargs = {arg: funcargs[arg] for arg in pyfuncitem._fixtureinfo.argnames if arg in funcargs}
+            testargs = {
+                arg: funcargs[arg]
+                for arg in pyfuncitem._fixtureinfo.argnames
+                if arg in funcargs
+            }
             loop.run_until_complete(pyfuncitem.obj(**testargs))
         finally:
+            # Ensure the loop is cleanly shut down before closing
+            if hasattr(loop, "shutdown_asyncgens"):
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            if hasattr(loop, "shutdown_default_executor"):
+                loop.run_until_complete(loop.shutdown_default_executor())
             loop.close()
+            # Restore the previous event loop (or clear it if there was none)
+            asyncio.set_event_loop(previous_loop)
         return True
 
 
