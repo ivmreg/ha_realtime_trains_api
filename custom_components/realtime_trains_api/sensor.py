@@ -409,17 +409,11 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 departure["locationDetail"].get("realtimeDeparture")
             )
 
-            if scheduled_str is not None:
-                scheduledTs = _timestamp(scheduled_str, departuredate)
-            elif estimated_str is not None:
-                scheduledTs = _timestamp(estimated_str, departuredate)
-            else:
+            scheduledTs, estimatedTs = _parse_times(
+                scheduled_str, estimated_str, departuredate
+            )
+            if scheduledTs is None or estimatedTs is None:
                 continue
-
-            if estimated_str is not None:
-                estimatedTs = _timestamp(estimated_str, departuredate)
-            else:
-                estimatedTs = scheduledTs
 
             if _delta_secs(estimatedTs, now) < self._timeoffset.total_seconds():
                 continue
@@ -524,17 +518,9 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     scheduled_arrival_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
                     estimated_arrival_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
 
-                    if scheduled_arrival_str is not None:
-                        scheduled_arrival = _timestamp(scheduled_arrival_str, scheduled_departure)
-                    elif estimated_arrival_str is not None:
-                        scheduled_arrival = _timestamp(estimated_arrival_str, scheduled_departure)
-                    else:
-                        scheduled_arrival = scheduled_departure
-
-                    if estimated_arrival_str is not None:
-                        estimated_arrival = _timestamp(estimated_arrival_str, scheduled_departure)
-                    else:
-                        estimated_arrival = scheduled_arrival
+                    scheduled_arrival, estimated_arrival = _parse_times(
+                        scheduled_arrival_str, estimated_arrival_str, scheduled_departure, scheduled_departure
+                    )
 
                     status = "OK"
                     if 'CANCELLED' in stop['displayAs']:
@@ -557,17 +543,9 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     scheduled_stop_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
                     estimated_stop_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
 
-                    if scheduled_stop_str is not None:
-                        scheduled_stop = _timestamp(scheduled_stop_str, scheduled_departure)
-                    elif estimated_stop_str is not None:
-                        scheduled_stop = _timestamp(estimated_stop_str, scheduled_departure)
-                    else:
-                        scheduled_stop = scheduled_departure
-
-                    if estimated_stop_str is not None:
-                        estimated_stop = _timestamp(estimated_stop_str, scheduled_departure)
-                    else:
-                        estimated_stop = scheduled_stop
+                    scheduled_stop, estimated_stop = _parse_times(
+                        scheduled_stop_str, estimated_stop_str, scheduled_departure, scheduled_departure
+                    )
 
                     stopsOfInterest.append(
                         {
@@ -615,10 +593,33 @@ def _to_colonseparatedtime(hhmm_time_str: str | None) -> str | None:
         return None
     return clean[:2] + ":" + clean[2:4]
 
+
+def _parse_times(
+    scheduled_str: str | None,
+    estimated_str: str | None,
+    date: datetime,
+    fallback_ts: datetime | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    """Parse scheduled and estimated times, applying fallbacks."""
+    if scheduled_str is not None:
+        scheduled_ts = _timestamp(scheduled_str, date)
+    elif estimated_str is not None:
+        scheduled_ts = _timestamp(estimated_str, date)
+    else:
+        scheduled_ts = fallback_ts
+
+    if estimated_str is not None:
+        estimated_ts = _timestamp(estimated_str, date)
+    else:
+        estimated_ts = scheduled_ts
+
+    return scheduled_ts, estimated_ts
+
 def _timestamp(hhmm_time_str : str, date : datetime | None = None) -> datetime:
     now = cast(datetime, dt_util.now()).astimezone(TIMEZONE) if date is None else date
-    hhmm_time_a = datetime.strptime(hhmm_time_str, "%H:%M")
-    hhmm_datetime = now.replace(hour=hhmm_time_a.hour, minute=hhmm_time_a.minute, second=0, microsecond=0)
+    hour = int(hhmm_time_str[:2])
+    minute = int(hhmm_time_str[3:5])
+    hhmm_datetime = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if hhmm_datetime < now:
         hhmm_datetime += timedelta(days=1)
     return hhmm_datetime
