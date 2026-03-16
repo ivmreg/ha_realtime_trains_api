@@ -109,9 +109,10 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
     if time_offset < 0:
         time_offset = 0
 
-    stops = _split_csv(user_input.get(FIELD_STOPS, ""))
+    stops_raw = _split_csv(user_input.get(FIELD_STOPS, ""))
+    stops = [stop.upper() for stop in stops_raw]
     for stop in stops:
-        if not CRS_CODE_PATTERN.match(stop.upper()):
+        if not CRS_CODE_PATTERN.match(stop):
             errors[FIELD_STOPS] = "invalid_crs"
             break
 
@@ -121,8 +122,8 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
 
     query = {
         CONF_SENSORNAME: sensor_name,
-    CONF_START: origin,
-    CONF_END: destination,
+        CONF_START: origin,
+        CONF_END: destination,
         CONF_JOURNEYDATA: journey_data,
         CONF_TIMEOFFSET: time_offset,
         CONF_STOPS_OF_INTEREST: stops,
