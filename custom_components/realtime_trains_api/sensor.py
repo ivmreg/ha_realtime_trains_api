@@ -1,7 +1,6 @@
 """Support for UK train data provided by api.rtt.io."""
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta
 import logging
 import pytz
