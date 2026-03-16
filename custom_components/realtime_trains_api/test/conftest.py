@@ -1,30 +1,38 @@
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
-# Mock Home Assistant and aiohttp modules
-mock_ha = MagicMock()
-sys.modules["homeassistant"] = mock_ha
-sys.modules["homeassistant.config_entries"] = MagicMock()
-sys.modules["homeassistant.core"] = MagicMock()
-sys.modules["homeassistant.helpers"] = MagicMock()
-sys.modules["homeassistant.helpers.typing"] = MagicMock()
+import pytest
+import asyncio
+import inspect
 
-mock_aiohttp = MagicMock()
+
 class FakeBasicAuth:
     def __init__(self, login, password, encoding="utf-8"):
         self.login = login
         self.password = password
         self.encoding = encoding
 
-mock_aiohttp.BasicAuth = FakeBasicAuth
-sys.modules["aiohttp"] = mock_aiohttp
 
-import pytest
-import asyncio
-import inspect
+@pytest.fixture(autouse=True, scope="session")
+def mock_external_modules(monkeypatch):
+    """Mock Home Assistant and aiohttp modules for the test session."""
+    # Mock Home Assistant-related modules
+    mock_ha = MagicMock()
+    monkeypatch.setitem(sys.modules, "homeassistant", mock_ha)
+    monkeypatch.setitem(sys.modules, "homeassistant.config_entries", MagicMock())
+    monkeypatch.setitem(sys.modules, "homeassistant.core", MagicMock())
+    monkeypatch.setitem(sys.modules, "homeassistant.helpers", MagicMock())
+    monkeypatch.setitem(sys.modules, "homeassistant.helpers.typing", MagicMock())
+
+    # Mock aiohttp with a BasicAuth implementation
+    mock_aiohttp = MagicMock()
+    mock_aiohttp.BasicAuth = FakeBasicAuth
+    monkeypatch.setitem(sys.modules, "aiohttp", mock_aiohttp)
+
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "asyncio: mark test as asyncio")
+
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_pyfunc_call(pyfuncitem):
@@ -39,6 +47,7 @@ def pytest_pyfunc_call(pyfuncitem):
             loop.close()
         return True
 
+
 @pytest.fixture
 def hass():
     """Fixture for a mock HomeAssistant instance."""
@@ -51,6 +60,7 @@ def hass():
     hass_mock.config_entries.async_unload_platforms = AsyncMock()
 
     return hass_mock
+
 
 @pytest.fixture
 def config_entry():
