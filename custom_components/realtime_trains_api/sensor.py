@@ -442,7 +442,6 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             train = {
                     "origin_name": departure["locationDetail"]["origin"][0]["description"],
                     "destination_name": departure["locationDetail"]["destination"][0]["description"],
-                    #"service_date": departure["runDate"],
                     "service_uid": departure["serviceUid"],
                     "scheduled": scheduledTs.strftime(STRFFORMAT),
                     "estimated": estimatedTs.strftime(STRFFORMAT),
