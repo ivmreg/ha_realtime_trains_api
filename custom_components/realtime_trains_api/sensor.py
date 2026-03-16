@@ -31,6 +31,7 @@ from .const import (
     CONF_START,
     CONF_STOPS_OF_INTEREST,
     CONF_TIMEOFFSET,
+    CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
 )
 from .rtt_api import (
@@ -164,13 +165,21 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
         sensor_name = str(sensor_name).strip() or None
 
     origin = str(raw_query[CONF_START]).strip().upper()
+    if not CRS_CODE_PATTERN.match(origin):
+        raise ValueError(f"Invalid origin CRS code: {origin}")
+
     destination_raw = raw_query.get(CONF_END, "")
     destination = str(destination_raw).strip().upper() if destination_raw else None
+    if destination and not CRS_CODE_PATTERN.match(destination):
+        raise ValueError(f"Invalid destination CRS code: {destination}")
 
     journey_data = _coerce_positive_int(raw_query.get(CONF_JOURNEYDATA, 0))
     time_offset = _coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, DEFAULT_TIMEOFFSET))
     stops = _ensure_list(raw_query.get(CONF_STOPS_OF_INTEREST, []))
     stops = [stop.upper() for stop in stops]
+    for stop in stops:
+        if not CRS_CODE_PATTERN.match(stop):
+            raise ValueError(f"Invalid stop CRS code: {stop}")
     platforms = _ensure_list(raw_query.get(CONF_PLATFORMS_OF_INTEREST, []))
 
     return {
@@ -409,11 +418,10 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 departure["locationDetail"].get("realtimeDeparture")
             )
 
-            if scheduled_str is not None:
-                scheduledTs = _timestamp(scheduled_str, departuredate)
-            elif estimated_str is not None:
-                scheduledTs = _timestamp(estimated_str, departuredate)
-            else:
+            scheduledTs, estimatedTs = _parse_times(
+                scheduled_str, estimated_str, departuredate
+            )
+            if scheduledTs is None or estimatedTs is None:
                 continue
 
             if estimated_str is not None:
@@ -421,7 +429,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             else:
                 estimatedTs = scheduledTs
 
-            if _delta_secs(estimatedTs, now) < self._timeoffset.total_seconds():
+            if _delta_seconds(estimatedTs, now) < self._timeoffset.total_seconds():
                 continue
 
             if nextDepartureEstimatedTs is None:
@@ -434,11 +442,10 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             train = {
                     "origin_name": departure["locationDetail"]["origin"][0]["description"],
                     "destination_name": departure["locationDetail"]["destination"][0]["description"],
-                    #"service_date": departure["runDate"],
                     "service_uid": departure["serviceUid"],
                     "scheduled": scheduledTs.strftime(STRFFORMAT),
                     "estimated": estimatedTs.strftime(STRFFORMAT),
-                    "minutes": _delta_secs(estimatedTs, now) // 60,
+                    "minutes": _delta_seconds(estimatedTs, now) // 60,
                     "platform": platform,
                     "operator_name": departure["atocName"],
                 }
@@ -451,7 +458,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         if nextDepartureEstimatedTs is None:
             self._state = None
         else:
-            self._state = _delta_secs(nextDepartureEstimatedTs, now) // 60
+            self._state = _delta_seconds(nextDepartureEstimatedTs, now) // 60
 
         if self._autoadjustscans:
             if nextDepartureEstimatedTs is None:
@@ -515,7 +522,25 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         stopCount = -1  # origin counts as first stop in the returned json
         found = False
         found_start = False
+
+        last_report_station = None
+        last_report_type = None
+        last_report_time_str = None
+
         for stop in data['locations']:
+            if stop.get('realtimePassActual') and stop.get('realtimePass'):
+                last_report_station = stop.get('crs')
+                last_report_type = 'Pass'
+                last_report_time_str = _to_colonseparatedtime(stop.get('realtimePass'))
+            elif stop.get('realtimeDepartureActual') and stop.get('realtimeDeparture'):
+                last_report_station = stop.get('crs')
+                last_report_type = 'Departure'
+                last_report_time_str = _to_colonseparatedtime(stop.get('realtimeDeparture'))
+            elif stop.get('realtimeArrivalActual') and stop.get('realtimeArrival'):
+                last_report_station = stop.get('crs')
+                last_report_type = 'Arrival'
+                last_report_time_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+
             if stop['crs'] == self._journey_start:
                 found_start = True
 
@@ -524,17 +549,9 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     scheduled_arrival_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
                     estimated_arrival_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
 
-                    if scheduled_arrival_str is not None:
-                        scheduled_arrival = _timestamp(scheduled_arrival_str, scheduled_departure)
-                    elif estimated_arrival_str is not None:
-                        scheduled_arrival = _timestamp(estimated_arrival_str, scheduled_departure)
-                    else:
-                        scheduled_arrival = scheduled_departure
-
-                    if estimated_arrival_str is not None:
-                        estimated_arrival = _timestamp(estimated_arrival_str, scheduled_departure)
-                    else:
-                        estimated_arrival = scheduled_arrival
+                    scheduled_arrival, estimated_arrival = _parse_times(
+                        scheduled_arrival_str, estimated_arrival_str, scheduled_departure, scheduled_departure
+                    )
 
                     status = "OK"
                     if 'CANCELLED' in stop['displayAs']:
@@ -546,7 +563,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                         "stops_of_interest": stopsOfInterest,
                         "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
                         "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
-                        "journey_time_mins": _delta_secs(estimated_arrival, estimated_departure) // 60,
+                        "journey_time_mins": _delta_seconds(estimated_arrival, estimated_departure) // 60,
                         "stops": stopCount,
                         "status": status,
                     }
@@ -557,17 +574,9 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     scheduled_stop_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
                     estimated_stop_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
 
-                    if scheduled_stop_str is not None:
-                        scheduled_stop = _timestamp(scheduled_stop_str, scheduled_departure)
-                    elif estimated_stop_str is not None:
-                        scheduled_stop = _timestamp(estimated_stop_str, scheduled_departure)
-                    else:
-                        scheduled_stop = scheduled_departure
-
-                    if estimated_stop_str is not None:
-                        estimated_stop = _timestamp(estimated_stop_str, scheduled_departure)
-                    else:
-                        estimated_stop = scheduled_stop
+                    scheduled_stop, estimated_stop = _parse_times(
+                        scheduled_stop_str, estimated_stop_str, scheduled_departure, scheduled_departure
+                    )
 
                     stopsOfInterest.append(
                         {
@@ -575,7 +584,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                             "name": stop['description'],
                             "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
                             "estimate_stop": estimated_stop.strftime(STRFFORMAT),
-                            "journey_time_mins": _delta_secs(estimated_stop, estimated_departure) // 60,
+                            "journey_time_mins": _delta_seconds(estimated_stop, estimated_departure) // 60,
                             "stops": stopCount,
                         }
                     )
@@ -592,6 +601,19 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 self._journey_end,
                 train['service_uid'],
             )
+
+        if last_report_station is not None:
+            if last_report_time_str:
+                # Use the service run date (midnight of the scheduled departure date)
+                # as the baseline so that times earlier than the journey-start
+                # departure time are not incorrectly rolled to the next day.
+                service_run_date = scheduled_departure.replace(hour=0, minute=0, second=0, microsecond=0)
+                last_report_time = _timestamp(last_report_time_str, service_run_date)
+            else:
+                last_report_time = None
+            train["last_report_station"] = last_report_station
+            train["last_report_type"] = last_report_type
+            train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
 
     @property
     def extra_state_attributes(self):
@@ -615,18 +637,58 @@ def _to_colonseparatedtime(hhmm_time_str: str | None) -> str | None:
         return None
     return clean[:2] + ":" + clean[2:4]
 
-def _timestamp(hhmm_time_str : str, date : datetime | None = None) -> datetime:
+
+def _parse_times(
+    scheduled_str: str | None,
+    estimated_str: str | None,
+    date: datetime,
+    fallback_ts: datetime | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    """Parse scheduled and estimated times, applying fallbacks."""
+    if scheduled_str is not None:
+        scheduled_ts = _timestamp(scheduled_str, date)
+    elif estimated_str is not None:
+        scheduled_ts = _timestamp(estimated_str, date)
+    else:
+        scheduled_ts = fallback_ts
+
+    if estimated_str is not None:
+        estimated_ts = _timestamp(estimated_str, date)
+    else:
+        estimated_ts = scheduled_ts
+
+    return scheduled_ts, estimated_ts
+
+def _timestamp(hhmm_time_str: str, date: datetime | None = None) -> datetime:
+    """Convert a time string to a datetime on or after the given date.
+
+    Accepts either "HH:MM" or "HHMM" formats. Raises ValueError on invalid input.
+    """
     now = cast(datetime, dt_util.now()).astimezone(TIMEZONE) if date is None else date
-    hhmm_datetime = now.replace(
-        hour=int(hhmm_time_str[:2]),
-        minute=int(hhmm_time_str[3:5]),
-        second=0,
-        microsecond=0,
-    )
+    clean = hhmm_time_str.strip()
+
+    if ":" in clean:
+        parts = clean.split(":")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(f"Invalid time format (expected HH:MM): {hhmm_time_str!r}")
+        if not parts[0].isdigit() or not parts[1].isdigit():
+            raise ValueError(f"Invalid time value (non-numeric): {hhmm_time_str!r}")
+        hour = int(parts[0])
+        minute = int(parts[1])
+    else:
+        if len(clean) != 4 or not clean.isdigit():
+            raise ValueError(f"Invalid time format (expected HHMM or HH:MM): {hhmm_time_str!r}")
+        hour = int(clean[:2])
+        minute = int(clean[2:])
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Invalid time value (out of range): {hhmm_time_str!r}")
+
+    hhmm_datetime = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if hhmm_datetime < now:
         hhmm_datetime += timedelta(days=1)
     return hhmm_datetime
 
-def _delta_secs(hhmm_datetime_a : datetime, hhmm_datetime_b : datetime) -> float:
-    """Calculate time delta in minutes to a time in hh:mm format."""
+def _delta_seconds(hhmm_datetime_a : datetime, hhmm_datetime_b : datetime) -> float:
+    """Calculate time delta in seconds between two datetime objects."""
     return (hhmm_datetime_a - hhmm_datetime_b).total_seconds()
