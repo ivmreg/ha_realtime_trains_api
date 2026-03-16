@@ -1,5 +1,6 @@
 import sys
 from unittest.mock import MagicMock
+import types
 
 # Mock homeassistant
 ha = MagicMock()
@@ -23,6 +24,19 @@ sys.modules["voluptuous"] = MagicMock()
 # Mock pytz
 sys.modules["pytz"] = MagicMock()
 
-# Mock aiohttp
-aiohttp = MagicMock()
+# Mock aiohttp: provide minimal BasicAuth stub used by rtt_api.py/tests
+aiohttp = types.ModuleType("aiohttp")
+
+class BasicAuth:
+    """Minimal stub of aiohttp.BasicAuth for tests.
+
+    Stores login and password attributes so assertions like
+    `auth.login == "user"` work as expected.
+    """
+
+    def __init__(self, login, password):
+        self.login = login
+        self.password = password
+
+aiohttp.BasicAuth = BasicAuth
 sys.modules["aiohttp"] = aiohttp
