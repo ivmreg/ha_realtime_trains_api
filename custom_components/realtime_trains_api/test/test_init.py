@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock
 import pytest
 from custom_components.realtime_trains_api import (
     async_setup,
