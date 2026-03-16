@@ -1,4 +1,3 @@
-import pytest
 from custom_components.realtime_trains_api.sensor import _to_colonseparatedtime
 
 def test_to_colonseparatedtime_valid():
