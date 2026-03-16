@@ -75,7 +75,7 @@ class RealtimeTrainsApiClient:
             if response.status == 404:
                 _LOGGER.debug("Endpoint returned 404 for path %s", path)
                 raise RealtimeTrainsApiNotFoundError(
-                    "Endpoint returned 404"
+                    f"Endpoint returned 404 for path {path}"
                 ) from None
             body = await response.text()
             _LOGGER.debug(
