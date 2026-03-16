@@ -1,0 +1,31 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "data": {
+                    "username": "API Username",
+                    "password": "API Password",
+                    "auto_adjust_scans": "Auto adjust scan interval",
+                    "scan_interval": "Scan interval (seconds)"
+                }
+            },
+            "query": {
+                "data": {
+                    "sensor_name": "Sensor Name (Optional)",
+                    "origin": "Origin Station (CRS Code)",
+                    "destination": "Destination Station (CRS Code, Optional)",
+                    "journey_data_for_next_X_trains": "Number of future trains to include",
+                    "time_offset_minutes": "Time offset (minutes)",
+                    "stops_input": "Stops of interest (CRS codes, comma separated)",
+                    "platforms_input": "Platforms of interest (comma separated)",
+                    "add_another": "Add another query"
+                },
+                "description": "Currently added: {added}"
+            }
+        },
+        "error": {
+            "invalid_crs": "Invalid CRS code. Must be exactly 3 uppercase letters.",
+            "required": "Required field."
+        }
+    }
+}

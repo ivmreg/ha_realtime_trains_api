@@ -1,6 +1,7 @@
 """Support for UK train data provided by api.rtt.io."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 import logging
 import pytz
@@ -31,6 +32,7 @@ from .const import (
     CONF_START,
     CONF_STOPS_OF_INTEREST,
     CONF_TIMEOFFSET,
+    CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
 )
 from .rtt_api import (
@@ -164,13 +166,21 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
         sensor_name = str(sensor_name).strip() or None
 
     origin = str(raw_query[CONF_START]).strip().upper()
+    if not CRS_CODE_PATTERN.match(origin):
+        raise ValueError(f"Invalid origin CRS code: {origin}")
+
     destination_raw = raw_query.get(CONF_END, "")
     destination = str(destination_raw).strip().upper() if destination_raw else None
+    if destination and not CRS_CODE_PATTERN.match(destination):
+        raise ValueError(f"Invalid destination CRS code: {destination}")
 
     journey_data = _coerce_positive_int(raw_query.get(CONF_JOURNEYDATA, 0))
     time_offset = _coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, DEFAULT_TIMEOFFSET))
     stops = _ensure_list(raw_query.get(CONF_STOPS_OF_INTEREST, []))
     stops = [stop.upper() for stop in stops]
+    for stop in stops:
+        if not CRS_CODE_PATTERN.match(stop):
+            raise ValueError(f"Invalid stop CRS code: {stop}")
     platforms = _ensure_list(raw_query.get(CONF_PLATFORMS_OF_INTEREST, []))
 
     return {
