@@ -617,8 +617,12 @@ def _to_colonseparatedtime(hhmm_time_str: str | None) -> str | None:
 
 def _timestamp(hhmm_time_str : str, date : datetime | None = None) -> datetime:
     now = cast(datetime, dt_util.now()).astimezone(TIMEZONE) if date is None else date
-    hhmm_time_a = datetime.strptime(hhmm_time_str, "%H:%M")
-    hhmm_datetime = now.replace(hour=hhmm_time_a.hour, minute=hhmm_time_a.minute, second=0, microsecond=0)
+    hhmm_datetime = now.replace(
+        hour=int(hhmm_time_str[:2]),
+        minute=int(hhmm_time_str[3:5]),
+        second=0,
+        microsecond=0,
+    )
     if hhmm_datetime < now:
         hhmm_datetime += timedelta(days=1)
     return hhmm_datetime
