@@ -509,7 +509,25 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         stopCount = -1  # origin counts as first stop in the returned json
         found = False
         found_start = False
+
+        last_report_station = None
+        last_report_type = None
+        last_report_time_str = None
+
         for stop in data['locations']:
+            if stop.get('realtimePassActual') and stop.get('realtimePass'):
+                last_report_station = stop.get('crs')
+                last_report_type = 'Pass'
+                last_report_time_str = _to_colonseparatedtime(stop.get('realtimePass'))
+            elif stop.get('realtimeDepartureActual') and stop.get('realtimeDeparture'):
+                last_report_station = stop.get('crs')
+                last_report_type = 'Departure'
+                last_report_time_str = _to_colonseparatedtime(stop.get('realtimeDeparture'))
+            elif stop.get('realtimeArrivalActual') and stop.get('realtimeArrival'):
+                last_report_station = stop.get('crs')
+                last_report_type = 'Arrival'
+                last_report_time_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+
             if stop['crs'] == self._journey_start:
                 found_start = True
 
@@ -570,6 +588,19 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 self._journey_end,
                 train['service_uid'],
             )
+
+        if last_report_station is not None:
+            if last_report_time_str:
+                # Use the service run date (midnight of the scheduled departure date)
+                # as the baseline so that times earlier than the journey-start
+                # departure time are not incorrectly rolled to the next day.
+                service_run_date = scheduled_departure.replace(hour=0, minute=0, second=0, microsecond=0)
+                last_report_time = _timestamp(last_report_time_str, service_run_date)
+            else:
+                last_report_time = None
+            train["last_report_station"] = last_report_station
+            train["last_report_type"] = last_report_type
+            train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
 
     @property
     def extra_state_attributes(self):
