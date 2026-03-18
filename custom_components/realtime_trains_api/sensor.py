@@ -172,7 +172,7 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
 
 def _query_unique_key(query: dict[str, Any]) -> str:
     stable_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha1(stable_json.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha256(stable_json.encode("utf-8")).hexdigest()[:12]
 
 
 def _create_sensors(

@@ -44,7 +44,7 @@ def test_parse_times_falls_back_to_arrival_when_departure_missing():
     assert estimated.strftime("%Y-%m-%d %H:%M") == "2026-03-18 10:07"
 
 
-def test_parse_times_with_arrival_rolls_to_next_day():
+def test_parse_times_rolls_to_next_day_when_baseline_near_midnight():
     baseline = TIMEZONE.localize(datetime(2026, 3, 18, 23, 58))
 
     scheduled, estimated = _parse_times("00:05", "00:07", baseline)
