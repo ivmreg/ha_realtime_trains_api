@@ -1,176 +1,85 @@
-# Agent Capabilities Documentation
+# Realtime Trains API Integration Capabilities
 
-This document outlines the capabilities (tools/functions) available to the agent. These capabilities allow the agent to interact with the file system, execute commands, communicate with the user, and perform various other tasks. This documentation is intended to help other agents or systems understand what is available and to build UI components that leverage these capabilities.
+This document outlines the capabilities of the `realtime_trains_api` Home Assistant custom component. It is intended to inform other agents or developers about what data and configuration options are available so they can build UI components or automations on top of this integration.
 
-## File System Operations
+## Overview
 
-### `list_files`
-Lists all files and directories under the given directory (defaults to repo root). Directories in the output will have a trailing slash.
-- **Parameters:**
-  - `path` (string, optional): The directory path to list files from. Defaults to the root of the repo.
+The integration connects to the Realtime Trains API (api.rtt.io) to provide detailed live train departure information and journey statistics for UK railway stations. It functions as a Home Assistant `sensor` entity.
 
-### `read_file`
-Reads the content of the specified file in the repo. Returns an error if the file does not exist.
-- **Parameters:**
-  - `filepath` (string, required): The path of the file to read, relative to the repo root.
+## Configuration Capabilities
 
-### `write_file`
-Creates a new file or overwrites an existing file.
-- **Parameters:**
-  - `filepath` (string, required): The path of the file to create or overwrite.
-  - `content` (string, required): The content to write to the file.
+The integration can be configured via Home Assistant's UI (config flow) or YAML. The following configuration parameters are supported per query (sensor):
 
-### `delete_file`
-Deletes the specified file. Returns an error message if the file does not exist.
-- **Parameters:**
-  - `filepath` (string, required): The path of the file to delete.
+*   **`origin`** (Required): The 3-letter CRS code (e.g., `WAT` for London Waterloo) of the departure station.
+*   **`destination`** (Optional): The 3-letter CRS code of the arrival station. If omitted, the sensor monitors all trains departing from the `origin` station.
+*   **`sensor_name`** (Optional): A custom name for the sensor entity (e.g., "My Commute"). If omitted, a name is automatically generated based on the origin and destination/platforms.
+*   **`journey_data_for_next_X_trains`** (Optional): An integer specifying for how many upcoming departures detailed journey data (stops, estimated arrival time) should be fetched. Defaults to 0. Fetching journey data requires additional API calls.
+*   **`stops_of_interest`** (Optional): A list of 3-letter CRS codes for intermediate stations. If specified, the sensor will check if the train calls at these stations and include their arrival times in the train's data. (Requires `journey_data_for_next_X_trains` > 0).
+*   **`platforms_of_interest`** (Optional): A list of platform numbers (as strings). If specified, the sensor will only monitor trains departing from these specific platforms.
+*   **`time_offset`** (Optional): A time offset (e.g., in minutes) to look for trains departing in the future. Useful if the user needs time to travel to the station.
 
-### `rename_file`
-Renames and/or moves files and directories. Returns an error message if `filepath` is missing, if `new_filepath` already exists, or if the target parent directory does not exist.
-- **Parameters:**
-  - `filepath` (string, required): The original path of the file or directory.
-  - `new_filepath` (string, required): The new path for the file or directory.
+### Global Configuration
 
-### `replace_with_git_merge_diff`
-Performs a targeted search-and-replace to modify an existing file. The format is a Git merge diff, meaning it needs a string argument with search and replace blocks.
-- **Parameters:**
-  - `filepath` (string, required): The path of the file to modify.
-  - `merge_diff` (string, required): The diff to apply to the file.
+*   **`scan_interval`**: How often the API is polled (default: 60 seconds).
+*   **`auto_adjust_scans`** (Boolean): If enabled, the integration backs off the polling interval (to 30 minutes) when no departures are found, saving API quotas.
 
-## Execution & Environment
+## Sensor Entity Model
 
-### `run_in_bash_session`
-Runs the given bash command in the sandbox. Successive invocations use the same bash session, but all invocations run from the repository root directory. Useful for installing dependencies, compiling code, running tests, etc.
-- **Parameters:**
-  - `command` (string, required): The bash command to run.
+Each configured query creates a Home Assistant `sensor` entity.
 
-## Workflow & Planning
+### Primary State
 
-### `set_plan`
-Sets the current plan to solve the issue, formatted in Markdown. Used after initial exploration or if the plan needs updating.
-- **Parameters:**
-  - `plan` (string, required): The plan to solve the issue, in Markdown format.
+The main state of the sensor represents the **number of minutes until the next matching train departs** from the origin station.
+*   **Unit of Measurement**: `min`
+*   **Icon**: `mdi:train`
 
-### `plan_step_complete`
-Marks the current plan step as complete. Must be called after verifying changes.
-- **Parameters:**
-  - `message` (string, required): A succinct, descriptive message explaining what actions were taken. User-visible.
+### State Attributes
 
-### `submit`
-Commits the current code with a title and description, requesting user approval to push to their branch.
-- **Parameters:**
-  - `branch_name` (string, required): The name of the branch to commit to.
-  - `commit_message` (string, required): The commit message.
-  - `title` (string, required): The title of the submission.
-  - `description` (string, required): The description of the submission.
+The sensor exposes rich data through its state attributes, which can be parsed to build detailed UIs:
 
-### `done`
-Indicates that the subagent has completed its task.
-- **Parameters:**
-  - `summary` (string, required): A summary of what was accomplished or the final result.
+*   **`journey_start`**: The origin station code (e.g., `WAT`).
+*   **`journey_end`**: The destination station code (e.g., `WAL`). Omitted if no destination is set.
+*   **`platforms_of_interest`**: A list of filtered platforms, if configured.
+*   **`next_trains`**: A list of dictionaries, where each dictionary represents an upcoming train.
 
-## Communication & User Interaction
+#### `next_trains` Object Structure
 
-### `message_user`
-Sends a statement to the user to respond to a question, provide feedback, or give an update. Set `continue_working` to true to continue actions, or false to wait for input.
-- **Parameters:**
-  - `message` (string, required): The message to send.
-  - `continue_working` (boolean, required): Whether to continue working after sending the message.
+Each item in the `next_trains` list contains:
 
-### `request_user_input`
-Asks the user a question or asks for input and waits for a response.
-- **Parameters:**
-  - `message` (string, required): The question or prompt for the user.
+*   **`origin_name`** (String): Full name of the train's starting point (e.g., "London Waterloo").
+*   **`destination_name`** (String): Full name of the train's final destination.
+*   **`service_uid`** (String): Unique identifier for the train service (e.g., "Q46478").
+*   **`scheduled`** (String): Scheduled departure time from the origin station (Format: `DD-MM-YYYY HH:MM`).
+*   **`estimated`** (String): Estimated departure time (Format: `DD-MM-YYYY HH:MM`).
+*   **`minutes`** (Integer): Minutes until estimated departure.
+*   **`platform`** (String): Departure platform number.
+*   **`operator_name`** (String): Train operating company (e.g., "South Western Railway").
 
-## Web & Media
+**Extended Journey Data (if `journey_data_for_next_X_trains` > 0):**
 
-### `google_search`
-Online google search to retrieve the most up to date information. The result contains top urls with title and snippets.
-- **Parameters:**
-  - `query` (string, required): The query to search for.
+*   **`scheduled_arrival`** (String): Scheduled arrival time at the destination station.
+*   **`estimate_arrival`** (String): Estimated arrival time at the destination station.
+*   **`journey_time_mins`** (Integer): Estimated total journey time in minutes.
+*   **`stops`** (Integer): Number of stops between origin and destination.
+*   **`stops_of_interest`** (List of Objects): Data for matched intermediate stops.
+    *   **`stop`** (String): CRS code of the intermediate stop.
+    *   **`name`** (String): Full name of the intermediate stop.
+    *   **`scheduled_stop`** (String): Scheduled arrival time at the stop.
+    *   **`estimate_stop`** (String): Estimated arrival time at the stop.
+    *   **`journey_time_mins`** (Integer): Journey time from origin to this stop.
+    *   **`stops`** (Integer): Number of stops before reaching this intermediate stop.
 
-### `view_text_website`
-Fetches the content of a website as plain text. Useful for accessing documentation or external resources.
-- **Parameters:**
-  - `url` (string, required): The URL of the website to fetch.
+### Realtime Position Information
+If `journey_data` is fetched, the integration will attempt to provide the latest reporting location of the train. The frontend should handle displaying this information:
+*   `last_report_station`: The CRS code of the last reported station.
+*   `last_report_type`: The type of report.
+*   `last_report_time`: The time of the report.
 
-### `view_image`
-Loads an image from the provided URL, allowing the agent to view and analyze its contents.
-- **Parameters:**
-  - `url` (string, required): The URL of the image to view.
+## Usage for UI Generation
 
-### `read_image_file`
-Reads the image file at the given filepath into context.
-- **Parameters:**
-  - `filepath` (string, required): The path of the image file to read.
-
-### `read_media_file`
-Reads a media file (image or video) from the machine into context. Supports image formats and .webm video formats.
-- **Parameters:**
-  - `filepath` (string, required): The path of the media file to read.
-
-## Source Control & Review
-
-### `pre_commit_instructions`
-Gets instructions on a list of pre-commit steps needed before submission.
-- **Parameters:** None.
-
-### `request_code_review`
-Requests a code review for the current change.
-- **Parameters:** None.
-
-### `read_pr_comments`
-Reads any pending pull request comments that the user has sent.
-- **Parameters:** None.
-
-### `reply_to_pr_comments`
-Replies to comments. Input must be a JSON string representing a list of objects with "comment_id" and "reply" keys.
-- **Parameters:**
-  - `replies` (string, required): The replies to the comments.
-
-## State & Memory Management
-
-### `reset_all`
-Resets the entire codebase to its original state. Use this to undo all changes and start over.
-- **Parameters:** None.
-
-### `restore_file`
-Restores the given file to its original state.
-- **Parameters:**
-  - `filepath` (string, required): The path of the file to restore.
-
-### `initiate_memory_recording`
-Starts recording information that will be useful for future tasks.
-- **Parameters:** None.
-
-## Frontend Verification
-
-### `frontend_verification_instructions`
-Returns instructions on how to write a Playwright script to verify frontend web applications and generate screenshots.
-- **Parameters:** None.
-
-### `frontend_verification_complete`
-Indicates that the frontend changes have been verified.
-- **Parameters:**
-  - `screenshot_path` (string, required): The path to the screenshot of the frontend changes.
-  - `additional_media_paths` (array of strings, optional): Optional list of paths to additional media files.
-
-### `start_live_preview_instructions`
-Returns instructions on how to start a live preview server.
-- **Parameters:** None.
-
-## Misc
-
-### `record_user_approval_for_plan`
-Records the user's approval for the plan.
-- **Parameters:** None.
-
-### `call_hello_world_agent`
-Calls the Hello World Agency agent with a message and returns its response. Used for testing integration.
-- **Parameters:**
-  - `message` (string, required): The message to send.
-
-## Deprecated Tools
-- `grep`: Use grep with `run_in_bash_session` instead.
-- `create_file_with_block`: Use `write_file` instead.
-- `overwrite_file_with_block`: Use `write_file` instead.
+An agent building a UI component for this integration should:
+1.  Read the main state to show a "Next train in X mins" badge.
+2.  Iterate over the `next_trains` list in the entity's attributes to display a list or table of upcoming departures.
+3.  Display platform, scheduled, and estimated times.
+4.  If extended journey data is present (`estimate_arrival`, `journey_time_mins`), show the expected arrival time and duration.
+5.  If `stops_of_interest` is populated, display calling points with their respective arrival times.
