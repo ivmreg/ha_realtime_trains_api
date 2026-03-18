@@ -168,28 +168,12 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
     if not CRS_CODE_PATTERN.match(origin):
         raise ValueError(f"Invalid origin CRS code: {origin}")
 
-    destination_raw = raw_query.get(CONF_END, "")
-    destination = str(destination_raw).strip().upper() if destination_raw else None
-    if destination and not CRS_CODE_PATTERN.match(destination):
-        raise ValueError(f"Invalid destination CRS code: {destination}")
-
     journey_data = _coerce_positive_int(raw_query.get(CONF_JOURNEYDATA, 0))
-    time_offset = _coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, DEFAULT_TIMEOFFSET))
-    stops = _ensure_list(raw_query.get(CONF_STOPS_OF_INTEREST, []))
-    stops = [stop.upper() for stop in stops]
-    for stop in stops:
-        if not CRS_CODE_PATTERN.match(stop):
-            raise ValueError(f"Invalid stop CRS code: {stop}")
-    platforms = _ensure_list(raw_query.get(CONF_PLATFORMS_OF_INTEREST, []))
 
     return {
         CONF_SENSORNAME: sensor_name,
         CONF_START: origin,
-        CONF_END: destination,
         CONF_JOURNEYDATA: journey_data,
-        CONF_TIMEOFFSET: time_offset,
-        CONF_STOPS_OF_INTEREST: stops,
-        CONF_PLATFORMS_OF_INTEREST: platforms,
     }
 
 
@@ -215,12 +199,8 @@ def _create_sensors(
             query.get(CONF_SENSORNAME),
             api_client,
             query[CONF_START],
-            query[CONF_END],
             query[CONF_JOURNEYDATA],
-            query[CONF_TIMEOFFSET],
             autoadjustscans,
-            query[CONF_STOPS_OF_INTEREST],
-            query[CONF_PLATFORMS_OF_INTEREST],
             interval,
             entry_id,
             idx,
@@ -316,61 +296,22 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         sensor_name: str | None,
         api_client: RealtimeTrainsApiClient,
         journey_start: str,
-        journey_end: str | None,
         journey_data_for_next_X_trains: int,
-        timeoffset: timedelta,
         autoadjustscans: bool,
-        stops_of_interest: list[str],
-        platforms_of_interest: list[str],
         interval: timedelta,
         entry_id: str | None = None,
         query_index: int = 0,
     ) -> None:
         """Construct a live train time sensor."""
 
-        if journey_end:
-            if platforms_of_interest:
-                platform_str = ", ".join(sorted(platforms_of_interest))
-                default_sensor_name = (
-                    f"Next train from {journey_start} platform {platform_str} to {journey_end} ({timeoffset})" 
-                    if (timeoffset.total_seconds() > 0)
-                    else f"Next train from {journey_start} platform {platform_str} to {journey_end}"
-                )
-            else:
-                default_sensor_name = (
-                    f"Next train from {journey_start} to {journey_end} ({timeoffset})" 
-                    if (timeoffset.total_seconds() > 0)
-                    else f"Next train from {journey_start} to {journey_end}"
-                )
-        else:
-            if platforms_of_interest:
-                platform_str = ", ".join(sorted(platforms_of_interest))
-                default_sensor_name = (
-                    f"Trains from {journey_start} platform {platform_str} ({timeoffset})" 
-                    if (timeoffset.total_seconds() > 0)
-                    else f"Trains from {journey_start} platform {platform_str}"
-                )
-            else:
-                default_sensor_name = (
-                    f"Trains from {journey_start} ({timeoffset})" 
-                    if (timeoffset.total_seconds() > 0)
-                    else f"Trains from {journey_start}"
-                )
+        default_sensor_name = f"Trains from {journey_start}"
 
         self._journey_start = journey_start
-        self._journey_end = journey_end
         self._journey_data_for_next_X_trains = journey_data_for_next_X_trains
         self._next_trains = []
         self._data = {}
         self._api = api_client
-        self._timeoffset = timeoffset
         self._autoadjustscans = autoadjustscans
-        self._stops_of_interest = [stop.upper() for stop in stops_of_interest]
-        self._platforms_of_interest = {
-            platform.strip()
-            for platform in platforms_of_interest
-            if isinstance(platform, str) and platform.strip()
-        }
         self._interval = interval
 
         self._name = default_sensor_name if sensor_name is None else sensor_name
@@ -378,11 +319,8 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         
         # Generate a stable unique_id for config entry sensors
         if entry_id:
-            # Create unique ID based on entry_id, origin, destination, platforms, and time offset
-            platforms_str = "_".join(sorted(platforms_of_interest)) if platforms_of_interest else "all"
-            dest_str = journey_end if journey_end else "all"
-            offset_str = f"{int(timeoffset.total_seconds())}" if timeoffset.total_seconds() > 0 else "0"
-            self._attr_unique_id = f"{entry_id}_{journey_start}_{dest_str}_{platforms_str}_{offset_str}_{query_index}"
+            # Create unique ID based on entry_id, origin and index
+            self._attr_unique_id = f"{entry_id}_{journey_start}_{query_index}"
         else:
             self._attr_unique_id = None
 
@@ -404,19 +342,17 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             if not departure["isPassenger"] :
                 continue
 
-            platform = departure["locationDetail"].get("platform", None)
-            platform_key = platform.strip() if isinstance(platform, str) else platform
-            if self._platforms_of_interest and platform_key not in self._platforms_of_interest:
-                continue
+            location_detail = departure.get("locationDetail", {})
+            platform = location_detail.get("platform", None)
 
             departuredate = TIMEZONE.localize(datetime.fromisoformat(departure["runDate"]))
 
-            scheduled_str = _to_colonseparatedtime(
-                departure["locationDetail"].get("gbttBookedDeparture")
-            )
-            estimated_str = _to_colonseparatedtime(
-                departure["locationDetail"].get("realtimeDeparture")
-            )
+            scheduled_str = _to_colonseparatedtime(location_detail.get("gbttBookedDeparture"))
+            estimated_str = _to_colonseparatedtime(location_detail.get("realtimeDeparture"))
+
+            if scheduled_str is None and estimated_str is None:
+                scheduled_str = _to_colonseparatedtime(location_detail.get("gbttBookedArrival"))
+                estimated_str = _to_colonseparatedtime(location_detail.get("realtimeArrival"))
 
             scheduledTs, estimatedTs = _parse_times(
                 scheduled_str, estimated_str, departuredate
@@ -428,9 +364,6 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 estimatedTs = _timestamp(estimated_str, departuredate)
             else:
                 estimatedTs = scheduledTs
-
-            if _delta_seconds(estimatedTs, now) < self._timeoffset.total_seconds():
-                continue
 
             if nextDepartureEstimatedTs is None:
                 nextDepartureEstimatedTs = estimatedTs
@@ -506,8 +439,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             )
         except RealtimeTrainsApiNotFoundError:
             _LOGGER.warning(
-                "Could not find %s in stops for service %s.",
-                self._journey_end,
+                "Could not find service %s.",
                 train['service_uid'],
             )
             return
@@ -520,57 +452,39 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
         stopsOfInterest = []
         stopCount = -1  # origin counts as first stop in the returned json
-        found = False
         found_start = False
 
         last_report_station = None
+        last_report_station_name = None
         last_report_type = None
         last_report_time_str = None
+        last_report_index = 0
 
         for stop in data['locations']:
             if stop.get('realtimePassActual') and stop.get('realtimePass'):
                 last_report_station = stop.get('crs')
+                last_report_station_name = stop.get('description')
                 last_report_type = 'Pass'
                 last_report_time_str = _to_colonseparatedtime(stop.get('realtimePass'))
+                last_report_index = max(0, stopCount)
             elif stop.get('realtimeDepartureActual') and stop.get('realtimeDeparture'):
                 last_report_station = stop.get('crs')
+                last_report_station_name = stop.get('description')
                 last_report_type = 'Departure'
                 last_report_time_str = _to_colonseparatedtime(stop.get('realtimeDeparture'))
+                last_report_index = max(0, stopCount)
             elif stop.get('realtimeArrivalActual') and stop.get('realtimeArrival'):
                 last_report_station = stop.get('crs')
+                last_report_station_name = stop.get('description')
                 last_report_type = 'Arrival'
                 last_report_time_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+                last_report_index = max(0, stopCount)
 
             if stop['crs'] == self._journey_start:
                 found_start = True
 
             if found_start and stop['crs'] != self._journey_start:
-                if self._journey_end and stop['crs'] == self._journey_end and stop['displayAs'] != 'ORIGIN':
-                    scheduled_arrival_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
-                    estimated_arrival_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
-
-                    scheduled_arrival, estimated_arrival = _parse_times(
-                        scheduled_arrival_str, estimated_arrival_str, scheduled_departure, scheduled_departure
-                    )
-
-                    status = "OK"
-                    if 'CANCELLED' in stop['displayAs']:
-                        status = "Cancelled"
-                    elif estimated_arrival > scheduled_arrival:
-                        status = "Delayed"
-
-                    newtrain = {
-                        "stops_of_interest": stopsOfInterest,
-                        "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
-                        "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
-                        "journey_time_mins": _delta_seconds(estimated_arrival, estimated_departure) // 60,
-                        "stops": stopCount,
-                        "status": status,
-                    }
-                    train.update(newtrain)
-                    found = True
-                    break
-                elif (not self._stops_of_interest or stop['crs'] in self._stops_of_interest) and stop['isPublicCall']:
+                if stop.get('isPublicCall'):
                     scheduled_stop_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
                     estimated_stop_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
 
@@ -580,8 +494,8 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
                     stopsOfInterest.append(
                         {
-                            "stop": stop['crs'],
-                            "name": stop['description'],
+                            "stop": stop.get('crs'),
+                            "name": stop.get('description'),
                             "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
                             "estimate_stop": estimated_stop.strftime(STRFFORMAT),
                             "journey_time_mins": _delta_seconds(estimated_stop, estimated_departure) // 60,
@@ -590,17 +504,8 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     )
             stopCount += 1
         
-        # If no destination specified, just add stops of interest without destination arrival info
-        if not self._journey_end:
-            found = True
-            train["stops_of_interest"] = stopsOfInterest
-            train["stops"] = stopCount
-        elif not found:
-            _LOGGER.warning(
-                "Could not find %s in stops for service %s.",
-                self._journey_end,
-                train['service_uid'],
-            )
+        train["stops_of_interest"] = stopsOfInterest
+        train["stops"] = stopCount
 
         if last_report_station is not None:
             if last_report_time_str:
@@ -612,8 +517,10 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             else:
                 last_report_time = None
             train["last_report_station"] = last_report_station
+            train["last_report_station_name"] = last_report_station_name
             train["last_report_type"] = last_report_type
             train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
+            train["last_report_index"] = last_report_index
 
     @property
     def extra_state_attributes(self):
@@ -621,10 +528,6 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         attrs = {}
         if self._data is not None:
             attrs[ATTR_JOURNEY_START] = self._journey_start
-            if self._journey_end:
-                attrs[ATTR_JOURNEY_END] = self._journey_end
-            if self._platforms_of_interest:
-                attrs[ATTR_PLATFORMS_OF_INTEREST] = sorted(self._platforms_of_interest)
             if self._next_trains:
                 attrs[ATTR_NEXT_TRAINS] = self._next_trains
             return attrs
