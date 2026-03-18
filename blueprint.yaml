@@ -1,12 +1,12 @@
 blueprint:
   name: Track Train by Schedule (AM & PM) – REST Command v7
   description: >
-    Queries RTT station departures to find a specific train by time/destination.
+    Queries RTT station departures and arrivals to find a specific train by time.
     Supports multiple backup trains (comma-separated times), conditional detailed lookups,
     and notification preferences (only on issues, include train identity, platform changes).
     
     Requires ONE rest_command in configuration.yaml (rtt_service is optional):
-    1. rtt_search: https://api.rtt.io/api/v1/json/search/{{ origin }}/to/{{ destination }}/{{ date }}/{{ time }}
+    1. rtt_search: https://api.rtt.io/api/v1/json/search/{{ origin }}/{{ date }}/{{ time }}
   domain: automation
 
   input:
@@ -32,12 +32,6 @@ blueprint:
       selector:
         text: {}
 
-    morning_destination:
-      name: Morning Destination Station (CRS)
-      description: "Where the train is going (e.g., CST)"
-      selector:
-        text: {}
-
     morning_scheduled:
       name: Morning Scheduled Time(s) (HHMM)
       description: "Comma-separated list of times to check in order (e.g., 0730,0745,0800). Will report on first available train."
@@ -53,12 +47,6 @@ blueprint:
     evening_station:
       name: Evening Origin Station (CRS)
       description: "Where you board (e.g., CST)"
-      selector:
-        text: {}
-
-    evening_destination:
-      name: Evening Destination Station (CRS)
-      description: "Where the train is going (e.g., BKH)"
       selector:
         text: {}
 
@@ -118,11 +106,9 @@ variables:
   
   # Inputs
   morning_origin: !input morning_station
-  morning_dest: !input morning_destination
   morning_times_raw: !input morning_scheduled
   
   evening_origin: !input evening_station
-  evening_dest: !input evening_destination
   evening_times_raw: !input evening_scheduled
 
   # Parse comma-separated times into lists
@@ -138,9 +124,6 @@ variables:
   search_origin: >
     {{ morning_origin if trigger.id == 'morning' else evening_origin }}
   
-  search_dest: >
-    {{ morning_dest if trigger.id == 'morning' else evening_dest }}
-    
   search_times: >
     {{ morning_times if trigger.id == 'morning' else evening_times }}
 
@@ -151,7 +134,6 @@ action:
   - service: rest_command.rtt_search
     data:
       origin: "{{ search_origin }}"
-      destination: "{{ search_dest }}"
       date: "{{ today }}"
       time: "{{ search_times[0] }}"
     response_variable: search_response
@@ -165,7 +147,7 @@ action:
         {% if search_data.services is defined %}
           {% for t in search_times %}
             {% for s in search_data.services %}
-              {% if s.locationDetail.gbttBookedDeparture == t %}
+              {% if s.locationDetail.gbttBookedDeparture == t or s.locationDetail.gbttBookedArrival == t %}
                 {% set ns.res = s | to_json %}
                 {% break %}
               {% endif %}
@@ -189,7 +171,7 @@ action:
           {% if search_data.error is defined %}
             ❌ API Error: {{ search_data.error }}
           {% else %}
-            ❓ Could not find trains from {{ search_origin }} to {{ search_dest }} at {{ search_times | join(', ') }}.
+            ❓ Could not find trains at {{ search_origin }} at {{ search_times | join(', ') }}.
           {% endif %}
       - stop: "No matching service found"
 
@@ -206,8 +188,8 @@ action:
       cancel_reason: "{{ loc.cancelReasonShortText | default('Unknown') }}"
       
       # Times & Delay
-      sched: "{{ loc.gbttBookedDeparture | default('') }}"
-      actual: "{{ loc.realtimeDeparture | default('') }}"
+      sched: "{{ loc.gbttBookedDeparture | default(loc.gbttBookedArrival | default('')) }}"
+      actual: "{{ loc.realtimeDeparture | default(loc.realtimeArrival | default('')) }}"
       
       delay_min: >
         {% if sched and actual %}
