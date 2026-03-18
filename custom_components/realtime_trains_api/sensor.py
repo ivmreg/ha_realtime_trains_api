@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import hashlib
+import json
 import logging
 import pytz
 
@@ -23,14 +25,10 @@ from .const import (
     CONF_API_PASSWORD,
     CONF_API_USERNAME,
     CONF_AUTOADJUSTSCANS,
-    CONF_END,
     CONF_JOURNEYDATA,
-    CONF_PLATFORMS_OF_INTEREST,
     CONF_QUERIES,
     CONF_SENSORNAME,
     CONF_START,
-    CONF_STOPS_OF_INTEREST,
-    CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
 )
@@ -60,12 +58,7 @@ _QUERY_SCHEME = vol.Schema(
     {
         vol.Optional(CONF_SENSORNAME): cv.string,
         vol.Required(CONF_START): cv.string,
-        vol.Required(CONF_END): cv.string,
         vol.Optional(CONF_JOURNEYDATA, default=0): cv.positive_int,
-        vol.Optional(CONF_TIMEOFFSET, default=DEFAULT_TIMEOFFSET):
-            vol.All(cv.time_period, cv.positive_timedelta),
-        vol.Optional(CONF_STOPS_OF_INTEREST): [cv.string],
-        vol.Optional(CONF_PLATFORMS_OF_INTEREST): [cv.string],
     }
 )
 
@@ -177,6 +170,11 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
     }
 
 
+def _query_unique_key(query: dict[str, Any]) -> str:
+    stable_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(stable_json.encode("utf-8")).hexdigest()[:12]
+
+
 def _create_sensors(
     api_client: RealtimeTrainsApiClient,
     autoadjustscans: bool,
@@ -188,7 +186,7 @@ def _create_sensors(
     seen_names: set[str] = set()
     seen_unique_ids: set[str] = set()
 
-    for idx, raw_query in enumerate(queries or []):
+    for raw_query in queries or []:
         try:
             query = _normalize_query(raw_query)
         except ValueError as err:
@@ -203,7 +201,7 @@ def _create_sensors(
             autoadjustscans,
             interval,
             entry_id,
-            idx,
+            _query_unique_key(query),
         )
 
         if sensor.name in seen_names:
@@ -300,7 +298,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         autoadjustscans: bool,
         interval: timedelta,
         entry_id: str | None = None,
-        query_index: int = 0,
+        query_key: str | None = None,
     ) -> None:
         """Construct a live train time sensor."""
 
@@ -318,9 +316,8 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         self._state = None
         
         # Generate a stable unique_id for config entry sensors
-        if entry_id:
-            # Create unique ID based on entry_id, origin and index
-            self._attr_unique_id = f"{entry_id}_{journey_start}_{query_index}"
+        if entry_id and query_key:
+            self._attr_unique_id = f"{entry_id}_{query_key}"
         else:
             self._attr_unique_id = None
 
@@ -417,10 +414,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
     async def _load_departures(self):
         try:
-            self._data = await self._api.fetch_location_services(
-                self._journey_start,
-                self._journey_end,
-            )
+            self._data = await self._api.fetch_location_services(self._journey_start)
         except RealtimeTrainsApiAuthError:
             self._state = "Credentials invalid"
             self._data = {}
@@ -536,7 +530,7 @@ def _to_colonseparatedtime(hhmm_time_str: str | None) -> str | None:
     if not hhmm_time_str:
         return None
     clean = hhmm_time_str.strip()
-    if len(clean) < 4:
+    if len(clean) != 4:
         return None
     return clean[:2] + ":" + clean[2:4]
 

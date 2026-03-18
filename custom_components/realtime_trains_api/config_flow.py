@@ -15,14 +15,10 @@ from .const import (
     CONF_API_PASSWORD,
     CONF_API_USERNAME,
     CONF_AUTOADJUSTSCANS,
-    CONF_END,
     CONF_JOURNEYDATA,
-    CONF_PLATFORMS_OF_INTEREST,
     CONF_QUERIES,
     CONF_SENSORNAME,
     CONF_START,
-    CONF_STOPS_OF_INTEREST,
-    CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -30,12 +26,8 @@ from .const import (
 
 FIELD_ADD_ANOTHER = "add_another"
 FIELD_EDIT_QUERIES = "edit_queries"
-FIELD_PLATFORMS = "platforms_input"
-FIELD_STOPS = "stops_input"
-FIELD_TIME_OFFSET = "time_offset_minutes"
 MIN_SCAN_INTERVAL_SECONDS = 30
 MAX_SCAN_INTERVAL_SECONDS = 6 * 3600
-MAX_TIME_OFFSET_MINUTES = 12 * 60
 
 
 def _user_schema() -> vol.Schema:
@@ -181,11 +173,7 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
                 defaults = {
                     CONF_SENSORNAME: query.get(CONF_SENSORNAME) or "",
                     CONF_START: query.get(CONF_START, ""),
-                    CONF_END: query.get(CONF_END) or "",
                     CONF_JOURNEYDATA: query.get(CONF_JOURNEYDATA, 0),
-                    FIELD_TIME_OFFSET: query.get(CONF_TIMEOFFSET, 0),
-                    FIELD_STOPS: user_input.get(FIELD_STOPS, ""),
-                    FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
                     FIELD_ADD_ANOTHER: add_another,
                 }
             else:
@@ -318,11 +306,7 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
                 defaults = {
                     CONF_SENSORNAME: user_input.get(CONF_SENSORNAME, ""),
                     CONF_START: user_input.get(CONF_START, ""),
-                    CONF_END: user_input.get(CONF_END, ""),
                     CONF_JOURNEYDATA: user_input.get(CONF_JOURNEYDATA, 0),
-                    FIELD_TIME_OFFSET: user_input.get(FIELD_TIME_OFFSET, 0),
-                    FIELD_STOPS: user_input.get(FIELD_STOPS, ""),
-                    FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
                     FIELD_ADD_ANOTHER: add_another,
                 }
                 return self._show_query_form(defaults, errors)
