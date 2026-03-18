@@ -15,14 +15,10 @@ from .const import (
     CONF_API_PASSWORD,
     CONF_API_USERNAME,
     CONF_AUTOADJUSTSCANS,
-    CONF_END,
     CONF_JOURNEYDATA,
-    CONF_PLATFORMS_OF_INTEREST,
     CONF_QUERIES,
     CONF_SENSORNAME,
     CONF_START,
-    CONF_STOPS_OF_INTEREST,
-    CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -30,12 +26,8 @@ from .const import (
 
 FIELD_ADD_ANOTHER = "add_another"
 FIELD_EDIT_QUERIES = "edit_queries"
-FIELD_PLATFORMS = "platforms_input"
-FIELD_STOPS = "stops_input"
-FIELD_TIME_OFFSET = "time_offset_minutes"
 MIN_SCAN_INTERVAL_SECONDS = 30
 MAX_SCAN_INTERVAL_SECONDS = 6 * 3600
-MAX_TIME_OFFSET_MINUTES = 12 * 60
 
 
 def _user_schema() -> vol.Schema:
@@ -58,15 +50,9 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         {
             vol.Optional(CONF_SENSORNAME, default=defaults.get(CONF_SENSORNAME, "")): cv.string,
             vol.Required(CONF_START, default=defaults.get(CONF_START, "")): cv.string,
-            vol.Optional(CONF_END, default=defaults.get(CONF_END, "")): cv.string,
             vol.Optional(CONF_JOURNEYDATA, default=defaults.get(CONF_JOURNEYDATA, 0)): vol.All(
                 vol.Coerce(int), vol.Range(min=0)
             ),
-            vol.Optional(FIELD_TIME_OFFSET, default=defaults.get(FIELD_TIME_OFFSET, 0)): vol.All(
-                vol.Coerce(int), vol.Range(min=0, max=MAX_TIME_OFFSET_MINUTES)
-            ),
-            vol.Optional(FIELD_STOPS, default=defaults.get(FIELD_STOPS, "")): cv.string,
-            vol.Optional(FIELD_PLATFORMS, default=defaults.get(FIELD_PLATFORMS, "")): cv.string,
             vol.Optional(FIELD_ADD_ANOTHER, default=False): bool,
         }
     )
@@ -83,17 +69,11 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
     errors: dict[str, str] = {}
 
     origin = str(user_input.get(CONF_START, "")).strip().upper()
-    destination_raw = user_input.get(CONF_END, "")
-    destination_str = str(destination_raw).strip().upper() if destination_raw is not None else ""
-    destination = destination_str or None
 
     if not origin:
         errors[CONF_START] = "required"
     elif not CRS_CODE_PATTERN.match(origin):
         errors[CONF_START] = "invalid_crs"
-
-    if destination and not CRS_CODE_PATTERN.match(destination):
-        errors[CONF_END] = "invalid_crs"
 
     sensor_name_raw = user_input.get(CONF_SENSORNAME)
     sensor_name = sensor_name_raw.strip() if isinstance(sensor_name_raw, str) else None
@@ -104,55 +84,22 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
     if journey_data < 0:
         journey_data = 0
 
-    time_offset = int(user_input.get(FIELD_TIME_OFFSET, 0))
-    if time_offset < 0:
-        time_offset = 0
-
-    stops_raw = _split_csv(user_input.get(FIELD_STOPS, ""))
-    stops = [stop.upper() for stop in stops_raw]
-    for stop in stops:
-        if not CRS_CODE_PATTERN.match(stop):
-            errors[FIELD_STOPS] = "invalid_crs"
-            break
-
-    platforms = _split_csv(user_input.get(FIELD_PLATFORMS, ""))
-
     add_another = bool(user_input.get(FIELD_ADD_ANOTHER))
 
     query = {
         CONF_SENSORNAME: sensor_name,
         CONF_START: origin,
-        CONF_END: destination,
         CONF_JOURNEYDATA: journey_data,
-        CONF_TIMEOFFSET: time_offset,
-        CONF_STOPS_OF_INTEREST: stops,
-        CONF_PLATFORMS_OF_INTEREST: platforms,
     }
 
     return query, add_another, errors
 
 
 def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
-    time_offset = raw_query.get(CONF_TIMEOFFSET, 0)
-    if isinstance(time_offset, timedelta):
-        minutes = int(time_offset.total_seconds() // 60)
-    else:
-        try:
-            minutes = int(time_offset)
-        except (TypeError, ValueError):
-            minutes = 0
-
-    stops = raw_query.get(CONF_STOPS_OF_INTEREST, []) or []
-    platforms = raw_query.get(CONF_PLATFORMS_OF_INTEREST, []) or []
-
     return {
         CONF_SENSORNAME: raw_query.get(CONF_SENSORNAME, "") or "",
         CONF_START: raw_query.get(CONF_START, ""),
-    CONF_END: (raw_query.get(CONF_END) or ""),
         CONF_JOURNEYDATA: raw_query.get(CONF_JOURNEYDATA, 0),
-        FIELD_TIME_OFFSET: minutes,
-        FIELD_STOPS: ", ".join(stops),
-        FIELD_PLATFORMS: ", ".join(platforms),
         FIELD_ADD_ANOTHER: False,
     }
 
@@ -226,11 +173,7 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
                 defaults = {
                     CONF_SENSORNAME: query.get(CONF_SENSORNAME) or "",
                     CONF_START: query.get(CONF_START, ""),
-                    CONF_END: query.get(CONF_END) or "",
                     CONF_JOURNEYDATA: query.get(CONF_JOURNEYDATA, 0),
-                    FIELD_TIME_OFFSET: query.get(CONF_TIMEOFFSET, 0),
-                    FIELD_STOPS: user_input.get(FIELD_STOPS, ""),
-                    FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
                     FIELD_ADD_ANOTHER: add_another,
                 }
             else:
@@ -363,11 +306,7 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
                 defaults = {
                     CONF_SENSORNAME: user_input.get(CONF_SENSORNAME, ""),
                     CONF_START: user_input.get(CONF_START, ""),
-                    CONF_END: user_input.get(CONF_END, ""),
                     CONF_JOURNEYDATA: user_input.get(CONF_JOURNEYDATA, 0),
-                    FIELD_TIME_OFFSET: user_input.get(FIELD_TIME_OFFSET, 0),
-                    FIELD_STOPS: user_input.get(FIELD_STOPS, ""),
-                    FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
                     FIELD_ADD_ANOTHER: add_another,
                 }
                 return self._show_query_form(defaults, errors)
