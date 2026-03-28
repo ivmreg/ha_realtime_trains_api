@@ -21,6 +21,7 @@ import homeassistant.util.dt as dt_util
 
 from .const import (
     CONF_API_PASSWORD,
+    CONF_API_TOKEN,
     CONF_API_USERNAME,
     CONF_AUTOADJUSTSCANS,
     CONF_END,
@@ -72,8 +73,9 @@ _QUERY_SCHEME = vol.Schema(
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
         vol.Optional(CONF_AUTOADJUSTSCANS, default=False): cv.boolean,
-        vol.Required(CONF_API_USERNAME): cv.string,
-        vol.Required(CONF_API_PASSWORD): cv.string,
+        vol.Optional(CONF_API_TOKEN): cv.string,
+        vol.Optional(CONF_API_USERNAME): cv.string,
+        vol.Optional(CONF_API_PASSWORD): cv.string,
         vol.Required(CONF_QUERIES): [_QUERY_SCHEME],
     }
 )
@@ -251,13 +253,20 @@ async def async_setup_platform(
     """Get the realtime_train sensor."""
     interval = _coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
     autoadjustscans = config[CONF_AUTOADJUSTSCANS]
-    username = config[CONF_API_USERNAME]
-    password = config[CONF_API_PASSWORD]
+    token = config.get(CONF_API_TOKEN)
+    if not token:
+        # Fallback for old configs
+        token = config.get(CONF_API_PASSWORD)
+
+    if not token:
+        _LOGGER.error("Realtime Trains API entry is missing a token.")
+        return
+
     queries = config[CONF_QUERIES]
 
 
     client = async_get_clientsession(hass)
-    api_client = RealtimeTrainsApiClient(client, username, password)
+    api_client = RealtimeTrainsApiClient(client, token)
 
     sensors = _create_sensors(api_client, autoadjustscans, interval, queries)
 
@@ -271,10 +280,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up sensors from a config entry."""
-    username = entry.data.get(CONF_API_USERNAME)
-    password = entry.data.get(CONF_API_PASSWORD)
+    token = entry.data.get(CONF_API_TOKEN)
+    if not token:
+        # Fallback to password for old config entries until they reauth
+        token = entry.data.get(CONF_API_PASSWORD)
 
-    if not username or not password:
+    if not token:
         _LOGGER.error("Realtime Trains API entry %s is missing credentials", entry.entry_id)
         return
 
@@ -287,7 +298,7 @@ async def async_setup_entry(
         return
 
     client = async_get_clientsession(hass)
-    api_client = RealtimeTrainsApiClient(client, username, password)
+    api_client = RealtimeTrainsApiClient(client, token)
 
     sensors = _create_sensors(api_client, autoadjustscans, interval, queries, entry.entry_id)
 
@@ -401,31 +412,46 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         departures = services or []
 
         for departure in departures:
-            if not departure["isPassenger"] :
+            schedule_metadata = departure.get("scheduleMetadata", {})
+            if not schedule_metadata.get("inPassengerService", False):
                 continue
 
-            platform = departure["locationDetail"].get("platform", None)
+            loc_metadata = departure.get("locationMetadata", {})
+            platform_dict = loc_metadata.get("platform", {})
+            # Use actual platform if available, else planned
+            platform = platform_dict.get("actual") or platform_dict.get("planned")
             platform_key = platform.strip() if isinstance(platform, str) else platform
             if self._platforms_of_interest and platform_key not in self._platforms_of_interest:
                 continue
 
-            departuredate = TIMEZONE.localize(datetime.fromisoformat(departure["runDate"]))
-
-            scheduled_str = _to_colonseparatedtime(
-                departure["locationDetail"].get("gbttBookedDeparture")
-            )
-            estimated_str = _to_colonseparatedtime(
-                departure["locationDetail"].get("realtimeDeparture")
-            )
-
-            scheduledTs, estimatedTs = _parse_times(
-                scheduled_str, estimated_str, departuredate
-            )
-            if scheduledTs is None or estimatedTs is None:
+            departuredate_str = schedule_metadata.get("departureDate")
+            if not departuredate_str:
                 continue
 
-            if estimated_str is not None:
-                estimatedTs = _timestamp(estimated_str, departuredate)
+            # temporalData handles datetimes as ISO strings
+            temporal_data = departure.get("temporalData", {}).get("departure", {})
+
+            scheduled_str = temporal_data.get("scheduleAdvertised") or temporal_data.get("scheduleInternal")
+
+            estimated_str = temporal_data.get("realtimeActual") or temporal_data.get("realtimeForecast") or temporal_data.get("realtimeEstimate")
+
+            if not scheduled_str:
+                continue
+
+            try:
+                scheduledTs = datetime.fromisoformat(scheduled_str)
+                if scheduledTs.tzinfo is None:
+                    scheduledTs = TIMEZONE.localize(scheduledTs)
+            except ValueError:
+                continue
+
+            if estimated_str:
+                try:
+                    estimatedTs = datetime.fromisoformat(estimated_str)
+                    if estimatedTs.tzinfo is None:
+                        estimatedTs = TIMEZONE.localize(estimatedTs)
+                except ValueError:
+                    estimatedTs = scheduledTs
             else:
                 estimatedTs = scheduledTs
 
@@ -439,15 +465,26 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
             departureCount += 1
 
+            # Get origin/destination
+            origins = departure.get("origin", [])
+            origin_name = origins[0].get("location", {}).get("description", "") if origins else ""
+
+            destinations = departure.get("destination", [])
+            destination_name = destinations[0].get("location", {}).get("description", "") if destinations else ""
+
+            service_uid = schedule_metadata.get("identity")
+
+            operator_name = schedule_metadata.get("operator", {}).get("name", "")
+
             train = {
-                    "origin_name": departure["locationDetail"]["origin"][0]["description"],
-                    "destination_name": departure["locationDetail"]["destination"][0]["description"],
-                    "service_uid": departure["serviceUid"],
+                    "origin_name": origin_name,
+                    "destination_name": destination_name,
+                    "service_uid": service_uid,
                     "scheduled": scheduledTs.strftime(STRFFORMAT),
                     "estimated": estimatedTs.strftime(STRFFORMAT),
                     "minutes": _delta_seconds(estimatedTs, now) // 60,
                     "platform": platform,
-                    "operator_name": departure["atocName"],
+                    "operator_name": operator_name,
                 }
             if departureCount > self._journey_data_for_next_X_trains:
                 break;
@@ -525,36 +562,61 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
         last_report_station = None
         last_report_type = None
-        last_report_time_str = None
+        last_report_time = None
 
-        for stop in data['locations']:
-            if stop.get('realtimePassActual') and stop.get('realtimePass'):
-                last_report_station = stop.get('crs')
+        service = data.get("service", {})
+        locations = service.get("locations", [])
+
+        for stop in locations:
+            stop_location = stop.get("location", {})
+            crs = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
+            description = stop_location.get("description", "")
+
+            temporal = stop.get("temporalData", {})
+            pass_data = temporal.get("pass", {})
+            dep_data = temporal.get("departure", {})
+            arr_data = temporal.get("arrival", {})
+
+            # Determine last report status
+            if pass_data.get("realtimeActual"):
+                last_report_station = crs
                 last_report_type = 'Pass'
-                last_report_time_str = _to_colonseparatedtime(stop.get('realtimePass'))
-            elif stop.get('realtimeDepartureActual') and stop.get('realtimeDeparture'):
-                last_report_station = stop.get('crs')
+                last_report_time = datetime.fromisoformat(pass_data["realtimeActual"])
+            elif dep_data.get("realtimeActual"):
+                last_report_station = crs
                 last_report_type = 'Departure'
-                last_report_time_str = _to_colonseparatedtime(stop.get('realtimeDeparture'))
-            elif stop.get('realtimeArrivalActual') and stop.get('realtimeArrival'):
-                last_report_station = stop.get('crs')
+                last_report_time = datetime.fromisoformat(dep_data["realtimeActual"])
+            elif arr_data.get("realtimeActual"):
+                last_report_station = crs
                 last_report_type = 'Arrival'
-                last_report_time_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+                last_report_time = datetime.fromisoformat(arr_data["realtimeActual"])
 
-            if stop['crs'] == self._journey_start:
+            if crs == self._journey_start:
                 found_start = True
 
-            if found_start and stop['crs'] != self._journey_start:
-                if self._journey_end and stop['crs'] == self._journey_end and stop['displayAs'] != 'ORIGIN':
-                    scheduled_arrival_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
-                    estimated_arrival_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+            if found_start and crs != self._journey_start:
+                display_as = temporal.get("displayAs") or ""
 
-                    scheduled_arrival, estimated_arrival = _parse_times(
-                        scheduled_arrival_str, estimated_arrival_str, scheduled_departure, scheduled_departure
-                    )
+                if self._journey_end and crs == self._journey_end and display_as != 'ORIGIN':
+                    scheduled_arrival_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal")
+                    estimated_arrival_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
+
+                    if not scheduled_arrival_str:
+                        continue
+
+                    scheduled_arrival = datetime.fromisoformat(scheduled_arrival_str)
+                    if scheduled_arrival.tzinfo is None:
+                        scheduled_arrival = TIMEZONE.localize(scheduled_arrival)
+
+                    if estimated_arrival_str:
+                        estimated_arrival = datetime.fromisoformat(estimated_arrival_str)
+                        if estimated_arrival.tzinfo is None:
+                            estimated_arrival = TIMEZONE.localize(estimated_arrival)
+                    else:
+                        estimated_arrival = scheduled_arrival
 
                     status = "OK"
-                    if 'CANCELLED' in stop['displayAs']:
+                    if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
                         status = "Cancelled"
                     elif estimated_arrival > scheduled_arrival:
                         status = "Delayed"
@@ -570,18 +632,28 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     train.update(newtrain)
                     found = True
                     break
-                elif (not self._stops_of_interest or stop['crs'] in self._stops_of_interest) and stop['isPublicCall']:
-                    scheduled_stop_str = _to_colonseparatedtime(stop.get('gbttBookedArrival'))
-                    estimated_stop_str = _to_colonseparatedtime(stop.get('realtimeArrival'))
+                elif (not self._stops_of_interest or crs in self._stops_of_interest) and (temporal.get("realtimeCallType") in ("ADVERTISED_OPEN", "ADVERTISED_SET_DOWN", "ADVERTISED_PICK_UP") or temporal.get("scheduledCallType") in ("ADVERTISED_OPEN", "ADVERTISED_SET_DOWN", "ADVERTISED_PICK_UP")):
+                    scheduled_stop_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal")
+                    estimated_stop_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
 
-                    scheduled_stop, estimated_stop = _parse_times(
-                        scheduled_stop_str, estimated_stop_str, scheduled_departure, scheduled_departure
-                    )
+                    if not scheduled_stop_str:
+                        continue
+
+                    scheduled_stop = datetime.fromisoformat(scheduled_stop_str)
+                    if scheduled_stop.tzinfo is None:
+                        scheduled_stop = TIMEZONE.localize(scheduled_stop)
+
+                    if estimated_stop_str:
+                        estimated_stop = datetime.fromisoformat(estimated_stop_str)
+                        if estimated_stop.tzinfo is None:
+                            estimated_stop = TIMEZONE.localize(estimated_stop)
+                    else:
+                        estimated_stop = scheduled_stop
 
                     stopsOfInterest.append(
                         {
-                            "stop": stop['crs'],
-                            "name": stop['description'],
+                            "stop": crs,
+                            "name": description,
                             "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
                             "estimate_stop": estimated_stop.strftime(STRFFORMAT),
                             "journey_time_mins": _delta_seconds(estimated_stop, estimated_departure) // 60,
@@ -603,14 +675,6 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             )
 
         if last_report_station is not None:
-            if last_report_time_str:
-                # Use the service run date (midnight of the scheduled departure date)
-                # as the baseline so that times earlier than the journey-start
-                # departure time are not incorrectly rolled to the next day.
-                service_run_date = scheduled_departure.replace(hour=0, minute=0, second=0, microsecond=0)
-                last_report_time = _timestamp(last_report_time_str, service_run_date)
-            else:
-                last_report_time = None
             train["last_report_station"] = last_report_station
             train["last_report_type"] = last_report_type
             train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
@@ -628,66 +692,6 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             if self._next_trains:
                 attrs[ATTR_NEXT_TRAINS] = self._next_trains
             return attrs
-
-def _to_colonseparatedtime(hhmm_time_str: str | None) -> str | None:
-    if not hhmm_time_str:
-        return None
-    clean = hhmm_time_str.strip()
-    if len(clean) < 4:
-        return None
-    return clean[:2] + ":" + clean[2:4]
-
-
-def _parse_times(
-    scheduled_str: str | None,
-    estimated_str: str | None,
-    date: datetime,
-    fallback_ts: datetime | None = None,
-) -> tuple[datetime | None, datetime | None]:
-    """Parse scheduled and estimated times, applying fallbacks."""
-    if scheduled_str is not None:
-        scheduled_ts = _timestamp(scheduled_str, date)
-    elif estimated_str is not None:
-        scheduled_ts = _timestamp(estimated_str, date)
-    else:
-        scheduled_ts = fallback_ts
-
-    if estimated_str is not None:
-        estimated_ts = _timestamp(estimated_str, date)
-    else:
-        estimated_ts = scheduled_ts
-
-    return scheduled_ts, estimated_ts
-
-def _timestamp(hhmm_time_str: str, date: datetime | None = None) -> datetime:
-    """Convert a time string to a datetime on or after the given date.
-
-    Accepts either "HH:MM" or "HHMM" formats. Raises ValueError on invalid input.
-    """
-    now = cast(datetime, dt_util.now()).astimezone(TIMEZONE) if date is None else date
-    clean = hhmm_time_str.strip()
-
-    if ":" in clean:
-        parts = clean.split(":")
-        if len(parts) != 2 or not parts[0] or not parts[1]:
-            raise ValueError(f"Invalid time format (expected HH:MM): {hhmm_time_str!r}")
-        if not parts[0].isdigit() or not parts[1].isdigit():
-            raise ValueError(f"Invalid time value (non-numeric): {hhmm_time_str!r}")
-        hour = int(parts[0])
-        minute = int(parts[1])
-    else:
-        if len(clean) != 4 or not clean.isdigit():
-            raise ValueError(f"Invalid time format (expected HHMM or HH:MM): {hhmm_time_str!r}")
-        hour = int(clean[:2])
-        minute = int(clean[2:])
-
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        raise ValueError(f"Invalid time value (out of range): {hhmm_time_str!r}")
-
-    hhmm_datetime = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if hhmm_datetime < now:
-        hhmm_datetime += timedelta(days=1)
-    return hhmm_datetime
 
 def _delta_seconds(hhmm_datetime_a : datetime, hhmm_datetime_b : datetime) -> float:
     """Calculate time delta in seconds between two datetime objects."""

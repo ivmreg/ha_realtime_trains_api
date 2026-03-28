@@ -6,6 +6,7 @@ PLATFORMS = ["sensor"]
 
 DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
 
+CONF_API_TOKEN = "token"
 CONF_API_USERNAME = "username"
 CONF_API_PASSWORD = "password"
 CONF_QUERIES = "queries"

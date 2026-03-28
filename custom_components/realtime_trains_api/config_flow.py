@@ -41,8 +41,7 @@ MAX_TIME_OFFSET_MINUTES = 12 * 60
 def _user_schema() -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(CONF_API_USERNAME): cv.string,
-            vol.Required(CONF_API_PASSWORD): cv.string,
+            vol.Required(CONF_API_TOKEN): cv.string,
             vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,
             vol.Optional(
                 CONF_SCAN_INTERVAL,
@@ -193,18 +192,20 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            username = user_input[CONF_API_USERNAME]
-            if not username:
-                errors[CONF_API_USERNAME] = "required"
+            token = user_input.get(CONF_API_TOKEN, "")
+            if not token:
+                errors[CONF_API_TOKEN] = "required"
             else:
-                username = username.strip()
-                if not username:
-                    errors[CONF_API_USERNAME] = "required"
+                token = token.strip()
+                if not token:
+                    errors[CONF_API_TOKEN] = "required"
 
             if not errors:
-                user_input[CONF_API_USERNAME] = username
+                user_input[CONF_API_TOKEN] = token
                 user_input[CONF_SCAN_INTERVAL] = int(user_input[CONF_SCAN_INTERVAL])
-                await self.async_set_unique_id(username.lower())
+                # Note: Token might be long, but unique_id based on a prefix or the token itself is fine
+                # Truncating to 30 chars for unique id if it's very long
+                await self.async_set_unique_id(token.lower()[:30])
                 self._abort_if_unique_id_configured()
                 self._config_data = dict(user_input)
                 return await self.async_step_query()
@@ -268,31 +269,36 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            new_password = user_input.get(CONF_API_PASSWORD, "").strip()
-            if not new_password:
-                errors[CONF_API_PASSWORD] = "required"
+            new_token = user_input.get(CONF_API_TOKEN, "").strip()
+            if not new_token:
+                errors[CONF_API_TOKEN] = "required"
             else:
                 data = dict(self._reauth_entry.data)
-                data[CONF_API_PASSWORD] = new_password
+                data[CONF_API_TOKEN] = new_token
+                if CONF_API_PASSWORD in data:
+                    del data[CONF_API_PASSWORD]
+                if CONF_API_USERNAME in data:
+                    del data[CONF_API_USERNAME]
                 self.hass.config_entries.async_update_entry(self._reauth_entry, data=data)
                 await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
                 return self.async_abort(reason="reauth_successful")
 
         return self.async_show_form(
             step_id="reauth",
-            data_schema=vol.Schema({vol.Required(CONF_API_PASSWORD): str}),
+            data_schema=vol.Schema({vol.Required(CONF_API_TOKEN): str}),
             description_placeholders={
-                "username": self._reauth_entry.data.get(CONF_API_USERNAME, "")
+                "username": self._reauth_entry.data.get(CONF_API_USERNAME, "Token user")
                 if self._reauth_entry
-                else "",
+                else "Token user",
             },
             errors=errors,
         )
 
     def _entry_title(self) -> str:
-        username = self._config_data.get(CONF_API_USERNAME)
-        if username:
-            return f"Realtime Trains API ({username})"
+        token = self._config_data.get(CONF_API_TOKEN)
+        if token:
+            display_token = token[:5] + "..." if len(token) > 5 else token
+            return f"Realtime Trains API ({display_token})"
         return "Realtime Trains API"
 
     @staticmethod

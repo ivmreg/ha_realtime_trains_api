@@ -4,9 +4,9 @@ from datetime import date, datetime
 import logging
 from typing import Any
 
-from aiohttp import BasicAuth, ClientSession
+from aiohttp import ClientSession
 
-API_BASE = "https://api.rtt.io/api/v1/json/"
+API_BASE = "https://data.rtt.io/"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -25,9 +25,9 @@ class RealtimeTrainsApiNotFoundError(RealtimeTrainsApiError):
 class RealtimeTrainsApiClient:
     """Simple async client for the Realtime Trains Pull API."""
 
-    def __init__(self, session: ClientSession, username: str, password: str) -> None:
+    def __init__(self, session: ClientSession, token: str) -> None:
         self._session = session
-        self._auth = BasicAuth(login=username, password=password, encoding="utf-8")
+        self._headers = {"Authorization": f"Bearer {token}"}
 
     async def fetch_location_services(
         self,
@@ -37,22 +37,25 @@ class RealtimeTrainsApiClient:
         time: str | None = None,
     ) -> dict[str, Any]:
         """Fetch departures or arrivals for a location."""
-        path_parts = ["search", station]
+        # Note: the new API expects ISO 8601 datetimes. Since this integration
+        # largely monitors "next" trains, query_date and time aren't heavily
+        # mapped in sensor logic right now (it uses 'now'), but if provided
+        # we can pass them.
+        params = [f"code={station}"]
         if to_station:
-            path_parts.extend(["to", to_station])
+            params.append(f"filterTo={to_station}")
         if query_date:
-            path_parts.extend(
-                [
-                    f"{query_date.year:04d}",
-                    f"{query_date.month:02d}",
-                    f"{query_date.day:02d}",
-                ]
-            )
-            if time:
-                path_parts.append(time)
+            if time and len(time) == 4:
+                # time is usually HHMM
+                iso_dt = f"{query_date.isoformat()}T{time[:2]}:{time[2:]}:00"
+                params.append(f"timeFrom={iso_dt}")
+            else:
+                params.append(f"timeFrom={query_date.isoformat()}T00:00:00")
         elif time:
             raise ValueError("time can only be provided when query_date is set")
-        return await self._request("/".join(path_parts))
+
+        path = "gb-nr/location?" + "&".join(params)
+        return await self._request(path)
 
     async def fetch_service_details(
         self,
@@ -62,15 +65,15 @@ class RealtimeTrainsApiClient:
         """Fetch detailed calling pattern for a specific service."""
         if isinstance(run_date, datetime):
             run_date = run_date.date()
-        path = f"service/{service_uid}/{run_date:%Y/%m/%d}"
+        path = f"gb-nr/service?identity={service_uid}&departureDate={run_date.isoformat()}"
         return await self._request(path)
 
     async def _request(self, path: str) -> dict[str, Any]:
         url = f"{API_BASE}{path}"
-        async with self._session.get(url, auth=self._auth) as response:
+        async with self._session.get(url, headers=self._headers) as response:
             if response.status == 200:
                 return await response.json()
-            if response.status == 403:
+            if response.status in (401, 403):
                 raise RealtimeTrainsApiAuthError("Credentials invalid") from None
             if response.status == 404:
                 _LOGGER.debug("Endpoint returned 404 for path %s", path)
