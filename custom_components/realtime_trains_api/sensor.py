@@ -20,9 +20,7 @@ from homeassistant.util import Throttle
 import homeassistant.util.dt as dt_util
 
 from .const import (
-    CONF_API_PASSWORD,
     CONF_API_TOKEN,
-    CONF_API_USERNAME,
     CONF_AUTOADJUSTSCANS,
     CONF_END,
     CONF_JOURNEYDATA,
@@ -74,8 +72,6 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
         vol.Optional(CONF_AUTOADJUSTSCANS, default=False): cv.boolean,
         vol.Optional(CONF_API_TOKEN): cv.string,
-        vol.Optional(CONF_API_USERNAME): cv.string,
-        vol.Optional(CONF_API_PASSWORD): cv.string,
         vol.Required(CONF_QUERIES): [_QUERY_SCHEME],
     }
 )
@@ -254,9 +250,6 @@ async def async_setup_platform(
     interval = _coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
     autoadjustscans = config[CONF_AUTOADJUSTSCANS]
     token = config.get(CONF_API_TOKEN)
-    if not token:
-        # Fallback for old configs
-        token = config.get(CONF_API_PASSWORD)
 
     if not token:
         _LOGGER.error("Realtime Trains API entry is missing a token.")
@@ -281,12 +274,9 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensors from a config entry."""
     token = entry.data.get(CONF_API_TOKEN)
-    if not token:
-        # Fallback to password for old config entries until they reauth
-        token = entry.data.get(CONF_API_PASSWORD)
 
     if not token:
-        _LOGGER.error("Realtime Trains API entry %s is missing credentials", entry.entry_id)
+        _LOGGER.error("Realtime Trains API entry %s is missing a token", entry.entry_id)
         return
 
     interval = _coerce_scan_interval(entry.options.get(CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)))

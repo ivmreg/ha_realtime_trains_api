@@ -12,8 +12,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
-    CONF_API_PASSWORD,
-    CONF_API_USERNAME,
+    CONF_API_TOKEN,
     CONF_AUTOADJUSTSCANS,
     CONF_END,
     CONF_JOURNEYDATA,
@@ -186,7 +185,6 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
     def __init__(self) -> None:
         self._config_data: dict[str, Any] = {}
         self._queries: list[dict[str, Any]] = []
-        self._reauth_entry: config_entries.ConfigEntry | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
@@ -254,43 +252,6 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
             step_id="query",
             data_schema=_query_schema(defaults),
             description_placeholders=description_placeholders,
-            errors=errors,
-        )
-
-    async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        if self._reauth_entry is None:
-            entry_id = self.context.get("entry_id")
-            if not entry_id:
-                return self.async_abort(reason="reauth_failed")
-            self._reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
-            if self._reauth_entry is None:
-                return self.async_abort(reason="reauth_failed")
-
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            new_token = user_input.get(CONF_API_TOKEN, "").strip()
-            if not new_token:
-                errors[CONF_API_TOKEN] = "required"
-            else:
-                data = dict(self._reauth_entry.data)
-                data[CONF_API_TOKEN] = new_token
-                if CONF_API_PASSWORD in data:
-                    del data[CONF_API_PASSWORD]
-                if CONF_API_USERNAME in data:
-                    del data[CONF_API_USERNAME]
-                self.hass.config_entries.async_update_entry(self._reauth_entry, data=data)
-                await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
-
-        return self.async_show_form(
-            step_id="reauth",
-            data_schema=vol.Schema({vol.Required(CONF_API_TOKEN): str}),
-            description_placeholders={
-                "username": self._reauth_entry.data.get(CONF_API_USERNAME, "Token user")
-                if self._reauth_entry
-                else "Token user",
-            },
             errors=errors,
         )
 

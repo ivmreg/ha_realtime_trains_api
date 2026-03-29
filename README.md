@@ -84,8 +84,7 @@ This is useful for:
 ```yaml
 sensor:
   - platform: realtime_trains_api
-    username: '[Your RTT API Auth Credentials username]'
-    password: '[Your RTT API Auth Credentials password]' # (recommended to use '!secret my_rtt_password' and add to secrets.yaml)
+    token: '[Your RTT API Token]' # recommended to use '!secret my_rtt_token' and add to secrets.yaml
     scan_interval:
       seconds: 90 # this defaults to 60 seconds (in HA) so you can change this.  Dont set it too frequent or you might get blocked for abuse of the RTT API.
     auto_adjust_scans: true # If no depatures are retrieved, back off polling interval to 30 mins (until there are some trains)
@@ -118,3 +117,31 @@ sensor:
 ```
 5. Restart HA
 6. Your `sensor` will be named something like `sensor.next_train_from_wal_to_wat` (unless you specified a `sensor_name`) for each query you defined in your configuration.
+
+## Blueprint: Track Train by Schedule
+
+This repository also includes a Home Assistant blueprint (`blueprint.yaml`) for tracking a specific scheduled train and receiving notifications for delays, cancellations, or platform changes.
+
+### Blueprint Prerequisites
+
+The blueprint requires configuring `rest_command` in your `configuration.yaml` to interact with the RTT v2 Token API.
+
+1. Add your raw RTT API token to `secrets.yaml`:
+```yaml
+rtt_token: "[Your RTT API Token]"
+```
+
+2. Add the following to your `configuration.yaml`:
+```yaml
+rest_command:
+  rtt_search:
+    url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ time[:2] }}:{{ time[2:] }}:00"
+    headers:
+      Authorization: "Bearer !secret rtt_token"
+  rtt_service:
+    url: "https://data.rtt.io/gb-nr/service?identity={{ uid }}&departureDate={{ date }}"
+    headers:
+      Authorization: "Bearer !secret rtt_token"
+```
+
+3. Import the `blueprint.yaml` into your Home Assistant instance to create automations based on train schedules.

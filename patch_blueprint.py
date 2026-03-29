@@ -1,11 +1,12 @@
-blueprint:
-  name: Track Train by Schedule (AM & PM) – REST Command v7
-  description: >
-    Queries RTT station departures to find a specific train by time/destination.
-    Supports multiple backup trains (comma-separated times), conditional detailed lookups,
-    and notification preferences (only on issues, include train identity, platform changes).
-    
-    Requires rest_commands in configuration.yaml (rtt_service is optional):
+import re
+
+with open('blueprint.yaml', 'r') as f:
+    content = f.read()
+
+# 1. Update description
+old_desc = """    Requires ONE rest_command in configuration.yaml (rtt_service is optional):
+    1. rtt_search: https://api.rtt.io/api/v1/json/search/{{ origin }}/to/{{ destination }}/{{ date }}/{{ time }}"""
+new_desc = """    Requires rest_commands in configuration.yaml (rtt_service is optional):
     rtt_search:
       url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ time[:2] }}:{{ time[2:] }}:00"
       headers:
@@ -13,147 +14,18 @@ blueprint:
     rtt_service:
       url: "https://data.rtt.io/gb-nr/service?identity={{ uid }}&departureDate={{ date }}"
       headers:
-        Authorization: "Bearer !secret rtt_token" 
-  domain: automation
+        Authorization: "Bearer !secret rtt_token" """
+content = content.replace(old_desc, new_desc)
 
-  input:
-    days:
-      name: Days of Week
-      description: "Automation only runs on these days"
-      selector:
-        select:
-          multiple: true
-          mode: list
-          options:
-            - Monday
-            - Tuesday
-            - Wednesday
-            - Thursday
-            - Friday
-            - Saturday
-            - Sunday
+# 2. Update today
+content = content.replace("today: \"{{ now().strftime('%Y/%m/%d') }}\"", "today: \"{{ now().strftime('%Y-%m-%d') }}\"")
 
-    morning_station:
-      name: Morning Origin Station (CRS)
-      description: "Where you board (e.g., BKH)"
-      selector:
-        text: {}
+# 3. Update action block entirely
+import textwrap
 
-    morning_destination:
-      name: Morning Destination Station (CRS)
-      description: "Where the train is going (e.g., CST)"
-      selector:
-        text: {}
-
-    morning_scheduled:
-      name: Morning Scheduled Time(s) (HHMM)
-      description: "Comma-separated list of times to check in order (e.g., 0730,0745,0800). Will report on first available train."
-      selector:
-        text: {}
-
-    morning_trigger_time:
-      name: Morning Check Time
-      description: "When to run the check (e.g., 07:20)"
-      selector:
-        time: {}
-
-    evening_station:
-      name: Evening Origin Station (CRS)
-      description: "Where you board (e.g., CST)"
-      selector:
-        text: {}
-
-    evening_destination:
-      name: Evening Destination Station (CRS)
-      description: "Where the train is going (e.g., BKH)"
-      selector:
-        text: {}
-
-    evening_scheduled:
-      name: Evening Scheduled Time(s) (HHMM)
-      description: "Comma-separated list of times to check in order (e.g., 1717,1722,1730). Will report on first available train."
-      selector:
-        text: {}
-
-    evening_trigger_time:
-      name: Evening Check Time
-      description: "When to run the check (e.g., 16:50)"
-      selector:
-        time: {}
-
-    notify_device:
-      name: Send Notifications To
-      selector:
-        device:
-          filter:
-            - integration: mobile_app
-
-    notify_only_on_issues:
-      name: Notify Only On Issues
-      description: "If enabled, only send notifications for cancellations, delays, or platform changes. Suppress 'on time' messages."
-      default: false
-      selector:
-        boolean: {}
-
-    fetch_detailed_info:
-      name: Fetch Detailed Service Info
-      description: "If enabled, makes an additional API call to get full calling pattern. Only needed for advanced use cases."
-      default: false
-      selector:
-        boolean: {}
-
-trigger:
-  - platform: time
-    at: !input morning_trigger_time
-    id: morning
-
-  - platform: time
-    at: !input evening_trigger_time
-    id: evening
-
-condition:
-  - condition: template
-    value_template: >
-      {% set days = days_input %}
-      {{ now().strftime('%A') in days }}
-
-variables:
-  days_input: !input days
-  notify_device: !input notify_device
-  notify_only_on_issues: !input notify_only_on_issues
-  fetch_detailed_info: !input fetch_detailed_info
-  
-  # Inputs
-  morning_origin: !input morning_station
-  morning_dest: !input morning_destination
-  morning_times_raw: !input morning_scheduled
-  
-  evening_origin: !input evening_station
-  evening_dest: !input evening_destination
-  evening_times_raw: !input evening_scheduled
-
-  # Parse comma-separated times into lists
-  morning_times: >
-    {% set times = morning_times_raw.split(',') %}
-    {{ times | map('trim') | map('replace', ':', '') | list }}
-  
-  evening_times: >
-    {% set times = evening_times_raw.split(',') %}
-    {{ times | map('trim') | map('replace', ':', '') | list }}
-
-  # Determine search parameters based on trigger
-  search_origin: >
-    {{ morning_origin if trigger.id == 'morning' else evening_origin }}
-  
-  search_dest: >
-    {{ morning_dest if trigger.id == 'morning' else evening_dest }}
-    
-  search_times: >
-    {{ morning_times if trigger.id == 'morning' else evening_times }}
-
-  today: "{{ now().strftime('%Y-%m-%d') }}"
-
-action:
+old_action_start = content.find("action:\n  # 1. Search")
+if old_action_start != -1:
+    new_action = """action:
   # 1. Search for the first scheduled time
   - service: rest_command.rtt_search
     data:
@@ -298,3 +170,8 @@ action:
               Platform: {{ platform }}
 
 mode: single
+"""
+    content = content[:old_action_start] + new_action
+
+with open('blueprint.yaml', 'w') as f:
+    f.write(content)
