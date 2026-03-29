@@ -392,11 +392,11 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
     async def _async_update(self):
         """Get the latest live departure data for the specified stop."""
         _LOGGER.debug("Updating Realtime Trains sensor: %s", self._name)
-        await self._load_departures()
+        now = cast(datetime, dt_util.now()).astimezone(TIMEZONE)
+        await self._load_departures(now)
         self._next_trains = []
         departureCount = 0
-        now = cast(datetime, dt_util.now()).astimezone(TIMEZONE)
-
+        
         nextDepartureEstimatedTs : (datetime | None) = None
 
         services = self._data.get("services") if isinstance(self._data, dict) else None
@@ -511,12 +511,14 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         """Return the state of the sensor."""
         return self._state
 
-    async def _load_departures(self):
+    async def _load_departures(self, now: datetime):
         try:
-            _LOGGER.debug("Fetching location services for %s to %s", self._journey_start, self._journey_end)
+            _LOGGER.debug("Fetching location services for %s to %s at %s", self._journey_start, self._journey_end, now.strftime("%H%M"))
             self._data = await self._api.fetch_location_services(
                 self._journey_start,
                 self._journey_end,
+                now.date(),
+                now.strftime("%H%M")
             )
         except RealtimeTrainsApiAuthError:
             self._state = "Credentials invalid"

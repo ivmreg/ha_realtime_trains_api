@@ -72,7 +72,9 @@ class RealtimeTrainsApiClient:
         url = f"{API_BASE}{path}"
         async with self._session.get(url, headers=self._headers) as response:
             if response.status == 200:
-                return await response.json()
+                json_data = await response.json()
+                _LOGGER.debug("API response for %s: %s", path, json_data)
+                return json_data
             if response.status in (401, 403):
                 raise RealtimeTrainsApiAuthError("Credentials invalid") from None
             if response.status == 404:
