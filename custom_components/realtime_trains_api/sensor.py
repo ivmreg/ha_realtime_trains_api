@@ -20,7 +20,7 @@ from homeassistant.util import Throttle
 import homeassistant.util.dt as dt_util
 
 from .const import (
-    CONF_API_TOKEN,
+    CONF_API_TOKEN as RTT_CONF_API_TOKEN,
     CONF_AUTOADJUSTSCANS,
     CONF_END,
     CONF_JOURNEYDATA,
@@ -71,7 +71,7 @@ _QUERY_SCHEME = vol.Schema(
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
         vol.Optional(CONF_AUTOADJUSTSCANS, default=False): cv.boolean,
-        vol.Optional(CONF_API_TOKEN): cv.string,
+        vol.Optional(RTT_CONF_API_TOKEN): cv.string,
         vol.Required(CONF_QUERIES): [_QUERY_SCHEME],
     }
 )
@@ -249,7 +249,7 @@ async def async_setup_platform(
     """Get the realtime_train sensor."""
     interval = _coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
     autoadjustscans = config[CONF_AUTOADJUSTSCANS]
-    token = config.get(CONF_API_TOKEN)
+    token = config.get(RTT_CONF_API_TOKEN)
 
     if not token:
         _LOGGER.error("Realtime Trains API entry is missing a token.")
@@ -273,7 +273,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up sensors from a config entry."""
-    token = entry.data.get(CONF_API_TOKEN)
+    token = entry.data.get(RTT_CONF_API_TOKEN)
 
     if not token:
         _LOGGER.error("Realtime Trains API entry %s is missing a token", entry.entry_id)

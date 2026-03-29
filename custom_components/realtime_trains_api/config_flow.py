@@ -12,7 +12,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
-    CONF_API_TOKEN,
+    CONF_API_TOKEN as RTT_CONF_API_TOKEN,
     CONF_AUTOADJUSTSCANS,
     CONF_END,
     CONF_JOURNEYDATA,
@@ -40,7 +40,7 @@ MAX_TIME_OFFSET_MINUTES = 12 * 60
 def _user_schema() -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(CONF_API_TOKEN): cv.string,
+            vol.Required(RTT_CONF_API_TOKEN): cv.string,
             vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,
             vol.Optional(
                 CONF_SCAN_INTERVAL,
@@ -190,16 +190,16 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            token = user_input.get(CONF_API_TOKEN, "")
+            token = user_input.get(RTT_CONF_API_TOKEN, "")
             if not token:
-                errors[CONF_API_TOKEN] = "required"
+                errors[RTT_CONF_API_TOKEN] = "required"
             else:
                 token = token.strip()
                 if not token:
-                    errors[CONF_API_TOKEN] = "required"
+                    errors[RTT_CONF_API_TOKEN] = "required"
 
             if not errors:
-                user_input[CONF_API_TOKEN] = token
+                user_input[RTT_CONF_API_TOKEN] = token
                 user_input[CONF_SCAN_INTERVAL] = int(user_input[CONF_SCAN_INTERVAL])
                 # Note: Token might be long, but unique_id based on a prefix or the token itself is fine
                 # Truncating to 30 chars for unique id if it's very long
@@ -256,7 +256,7 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
         )
 
     def _entry_title(self) -> str:
-        token = self._config_data.get(CONF_API_TOKEN)
+        token = self._config_data.get(RTT_CONF_API_TOKEN)
         if token:
             display_token = token[:5] + "..." if len(token) > 5 else token
             return f"Realtime Trains API ({display_token})"
