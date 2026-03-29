@@ -3,6 +3,7 @@
         "step": {
             "user": {
                 "data": {
+                    "token": "API Token",
                     "username": "API Username",
                     "password": "API Password",
                     "auto_adjust_scans": "Auto adjust scan interval",

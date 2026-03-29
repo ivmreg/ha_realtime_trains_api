@@ -65,23 +65,23 @@ def fixture_sample_departures() -> dict:
 @pytest.mark.asyncio
 async def test_fetch_location_services_returns_sample(sample_departures: dict) -> None:
     session = MockSession()
-    url = f"{API_BASE}search/BKH/to/CST"
+    url = f"{API_BASE}gb-nr/location?code=BKH&filterTo=CST"
     session.queue_response(url, MockResponse(200, json_data=sample_departures))
-    client = RealtimeTrainsApiClient(session, "user", "pass")
+    client = RealtimeTrainsApiClient(session, "token123")
 
     data = await client.fetch_location_services("BKH", "CST")
 
     assert data == sample_departures
     assert session.calls[0][0] == url
-    assert session.calls[0][1]["auth"].login == "user"
+    assert session.calls[0][1]["headers"]["Authorization"] == "Bearer token123"
 
 
 @pytest.mark.asyncio
 async def test_fetch_location_services_builds_dated_path(sample_departures: dict) -> None:
     session = MockSession()
-    dated_url = f"{API_BASE}search/BKH/to/CST/2025/11/04/1730"
+    dated_url = f"{API_BASE}gb-nr/location?code=BKH&filterTo=CST&timeFrom=2025-11-04T17:30:00"
     session.queue_response(dated_url, MockResponse(200, json_data=sample_departures))
-    client = RealtimeTrainsApiClient(session, "user", "pass")
+    client = RealtimeTrainsApiClient(session, "token123")
 
     data = await client.fetch_location_services("BKH", "CST", date(2025, 11, 4), "1730")
 
@@ -91,7 +91,7 @@ async def test_fetch_location_services_builds_dated_path(sample_departures: dict
 
 @pytest.mark.asyncio
 async def test_fetch_location_services_requires_date_with_time() -> None:
-    client = RealtimeTrainsApiClient(MockSession(), "user", "pass")
+    client = RealtimeTrainsApiClient(MockSession(), "token123")
 
     with pytest.raises(ValueError):
         await client.fetch_location_services("BKH", "CST", time="1730")
@@ -100,9 +100,9 @@ async def test_fetch_location_services_requires_date_with_time() -> None:
 @pytest.mark.asyncio
 async def test_fetch_location_services_auth_error() -> None:
     session = MockSession()
-    url = f"{API_BASE}search/BKH/to/CST"
+    url = f"{API_BASE}gb-nr/location?code=BKH&filterTo=CST"
     session.queue_response(url, MockResponse(403))
-    client = RealtimeTrainsApiClient(session, "user", "pass")
+    client = RealtimeTrainsApiClient(session, "token123")
 
     with pytest.raises(RealtimeTrainsApiAuthError):
         await client.fetch_location_services("BKH", "CST")
@@ -111,9 +111,9 @@ async def test_fetch_location_services_auth_error() -> None:
 @pytest.mark.asyncio
 async def test_fetch_location_services_not_found() -> None:
     session = MockSession()
-    url = f"{API_BASE}search/BKH/to/XXX"
+    url = f"{API_BASE}gb-nr/location?code=BKH&filterTo=XXX"
     session.queue_response(url, MockResponse(404))
-    client = RealtimeTrainsApiClient(session, "user", "pass")
+    client = RealtimeTrainsApiClient(session, "token123")
 
     with pytest.raises(RealtimeTrainsApiNotFoundError):
         await client.fetch_location_services("BKH", "XXX")
@@ -122,9 +122,9 @@ async def test_fetch_location_services_not_found() -> None:
 @pytest.mark.asyncio
 async def test_fetch_service_details_uses_date(sample_departures: dict) -> None:
     session = MockSession()
-    service_url = f"{API_BASE}service/P18676/2025/11/04"
+    service_url = f"{API_BASE}gb-nr/service?identity=P18676&departureDate=2025-11-04"
     session.queue_response(service_url, MockResponse(200, json_data=sample_departures))
-    client = RealtimeTrainsApiClient(session, "user", "pass")
+    client = RealtimeTrainsApiClient(session, "token123")
 
     data = await client.fetch_service_details("P18676", datetime(2025, 11, 4, 17, 0))
 
@@ -135,9 +135,9 @@ async def test_fetch_service_details_uses_date(sample_departures: dict) -> None:
 @pytest.mark.asyncio
 async def test_fetch_service_details_unexpected_status() -> None:
     session = MockSession()
-    service_url = f"{API_BASE}service/P18676/2025/11/04"
+    service_url = f"{API_BASE}gb-nr/service?identity=P18676&departureDate=2025-11-04"
     session.queue_response(service_url, MockResponse(500, text_data="server error"))
-    client = RealtimeTrainsApiClient(session, "user", "pass")
+    client = RealtimeTrainsApiClient(session, "token123")
 
     with pytest.raises(RealtimeTrainsApiError) as err:
         await client.fetch_service_details("P18676", date(2025, 11, 4))

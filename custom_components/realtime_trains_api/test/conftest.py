@@ -13,7 +13,7 @@ class FakeBasicAuth:
         self.encoding = encoding
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(autouse=True, scope="function")
 def mock_external_modules(monkeypatch):
     """Mock Home Assistant and aiohttp modules for the test session."""
     # Mock Home Assistant-related modules
