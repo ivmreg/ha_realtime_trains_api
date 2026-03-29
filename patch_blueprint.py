@@ -8,7 +8,7 @@ old_desc = """    Requires ONE rest_command in configuration.yaml (rtt_service i
     1. rtt_search: https://api.rtt.io/api/v1/json/search/{{ origin }}/to/{{ destination }}/{{ date }}/{{ time }}"""
 new_desc = """    Requires rest_commands in configuration.yaml (rtt_service is optional):
     rtt_search:
-      url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ time[:2] }}:{{ time[2:] }}:00"
+      url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ '%02d' | format((time | int / 100) | int) }}:{{ '%02d' | format(time | int % 100) }}:00"
       headers:
         Authorization: "Bearer !secret rtt_token"
     rtt_service:

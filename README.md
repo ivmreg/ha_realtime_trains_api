@@ -135,7 +135,7 @@ rtt_token: "[Your RTT API Token]"
 ```yaml
 rest_command:
   rtt_search:
-    url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ time[:2] }}:{{ time[2:] }}:00"
+    url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ '%02d' | format((time | int / 100) | int) }}:{{ '%02d' | format(time | int % 100) }}:00"
     headers:
       Authorization: "Bearer !secret rtt_token"
   rtt_service:

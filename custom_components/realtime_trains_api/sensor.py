@@ -391,6 +391,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
     async def _async_update(self):
         """Get the latest live departure data for the specified stop."""
+        _LOGGER.debug("Updating Realtime Trains sensor: %s", self._name)
         await self._load_departures()
         self._next_trains = []
         departureCount = 0
@@ -400,6 +401,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
         services = self._data.get("services") if isinstance(self._data, dict) else None
         departures = services or []
+        _LOGGER.debug("Found %d services for %s", len(departures), self._journey_start)
 
         for departure in departures:
             schedule_metadata = departure.get("scheduleMetadata", {})
@@ -511,6 +513,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
     async def _load_departures(self):
         try:
+            _LOGGER.debug("Fetching location services for %s to %s", self._journey_start, self._journey_end)
             self._data = await self._api.fetch_location_services(
                 self._journey_start,
                 self._journey_end,
