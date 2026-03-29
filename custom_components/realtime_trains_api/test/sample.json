@@ -94,8 +94,23 @@
                 "platformConfirmed": true,
                 "platformChanged": false,
                 "displayAs": "CALL"
-            },
-            "serviceUid": "P18532",
+                },
+                "scheduleMetadata": {
+                    "identity": "P18532",
+                    "trainReportingIdentity": "2T13",
+                    "departureDate": "2025-11-04"
+                },
+                "temporalData": {
+                    "displayAs": "CALL",
+                    "departure": {
+                        "scheduleAdvertised": "2025-11-04T17:36:00",
+                        "scheduleInternal": "2025-11-04T17:36:00",
+                        "realtimeEstimate": "2025-11-04T17:36:00",
+                        "realtimeActual": "",
+                        "isCancelled": false
+                    }
+                },
+                "serviceUid": "P18532",
             "runDate": "2025-11-04",
             "trainIdentity": "2T13",
             "runningIdentity": "2T13",

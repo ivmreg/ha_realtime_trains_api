@@ -172,8 +172,15 @@ action:
         {% if search_data.services is defined %}
           {% for t in search_times %}
             {% for s in search_data.services %}
-              {% set s_time = s.temporalData.departure.scheduleAdvertised | default(s.temporalData.departure.scheduleInternal | default('')) %}
-              {% if s_time != '' and s_time[11:13] ~ s_time[14:16] == t %}
+              {% set s_time_raw = s.temporalData.departure.scheduleAdvertised | default(s.temporalData.departure.scheduleInternal | default('')) %}
+              {% set s_time = s_time_raw | string %}
+              {% set hourmin = '' %}
+              {% if s_time | length >= 16 %}
+                {% set hourmin = s_time[11:13] ~ s_time[14:16] %}
+              {% elif s_time | length >= 4 %}
+                {% set hourmin = s_time[-4:] %}
+              {% endif %}
+              {% if hourmin != '' and hourmin == (t | string) %}
                 {% set ns.res = s | to_json %}
                 {% break %}
               {% endif %}
@@ -229,8 +236,28 @@ action:
       sched: "{{ temp_data.departure.scheduleAdvertised | default(temp_data.departure.scheduleInternal | default('')) }}"
       actual: "{{ temp_data.departure.realtimeActual | default(temp_data.departure.realtimeEstimate | default('')) }}"
       
-      sched_display: "{{ (sched[11:16] if sched | length >= 16 else sched) | default('Unknown', true) }}"
-      actual_display: "{{ (actual[11:16] if actual | length >= 16 else actual) | default('Unknown', true) }}"
+      sched_display: >
+        {% set sched_s = sched | string %}
+        {% if sched_s | length >= 16 %}
+          {{ sched_s[11:16] }}
+        {% elif sched_s | length >= 4 %}
+          {{ sched_s[-4:-2] }}:{{ sched_s[-2:] }}
+        {% elif sched_s %}
+          {{ sched_s }}
+        {% else %}
+          Unknown
+        {% endif %}
+      actual_display: >
+        {% set actual_s = actual | string %}
+        {% if actual_s | length >= 16 %}
+          {{ actual_s[11:16] }}
+        {% elif actual_s | length >= 4 %}
+          {{ actual_s[-4:-2] }}:{{ actual_s[-2:] }}
+        {% elif actual_s %}
+          {{ actual_s }}
+        {% else %}
+          Unknown
+        {% endif %}
       
       delay_min: >
         {% if sched and actual %}
