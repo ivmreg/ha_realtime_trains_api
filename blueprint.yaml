@@ -1,19 +1,24 @@
 blueprint:
-  name: Track Train by Schedule (AM & PM) – REST Command v8
+  name: Track Train by Schedule (AM & PM) – REST Command v9
   description: >
     Queries RTT station departures to find a specific train by time/destination.
     Supports multiple backup trains (comma-separated times), conditional detailed lookups,
     and notification preferences (only on issues, include train identity, platform changes).
     
-    Requires rest_commands in configuration.yaml (rtt_service is optional):
+    Requires rest_commands in configuration.yaml:
+    rtt_get_token:
+      url: "https://data.rtt.io/api/get_access_token"
+      headers:
+        accept: "application/json"
+        Authorization: "Bearer !secret rtt_refresh_token"
     rtt_search:
       url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ '%02d' | format((time | int / 100) | int) }}:{{ '%02d' | format(time | int % 100) }}:00"
       headers:
-        Authorization: "Bearer !secret rtt_token"
+        Authorization: "Bearer {{ token }}"
     rtt_service:
       url: "https://data.rtt.io/gb-nr/service?identity={{ uid }}&departureDate={{ date }}"
       headers:
-        Authorization: "Bearer !secret rtt_token" 
+        Authorization: "Bearer {{ token }}" 
   domain: automation
 
   input:
@@ -154,9 +159,28 @@ variables:
   today: "{{ now().strftime('%Y-%m-%d') }}"
 
 action:
+  # 0. Get Access Token
+  - service: rest_command.rtt_get_token
+    response_variable: token_response
+
+  - variables:
+      token_data: "{{ token_response.content | from_json if token_response.content is string else token_response.content }}"
+      access_token: "{{ token_data.token | default('') }}"
+
+  - if:
+      - condition: template
+        value_template: "{{ access_token == '' }}"
+    then:
+      - domain: mobile_app
+        type: notify
+        device_id: !input notify_device
+        message: "❌ API Error: Failed to get RTT access token. Check your refresh token."
+      - stop: "Failed to get access token"
+
   # 1. Search for the first scheduled time
   - service: rest_command.rtt_search
     data:
+      token: "{{ access_token }}"
       origin: "{{ search_origin }}"
       destination: "{{ search_dest }}"
       date: "{{ today }}"
@@ -276,6 +300,7 @@ action:
     then:
       - service: rest_command.rtt_service
         data:
+          token: "{{ access_token }}"
           uid: "{{ uid }}"
           date: "{{ run_date if run_date else today }}"
         response_variable: rtt_response
