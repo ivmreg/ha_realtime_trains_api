@@ -1,5 +1,5 @@
 blueprint:
-  name: Track Train by Schedule (AM & PM) – REST Command v7
+  name: Track Train by Schedule (AM & PM) – REST Command v8
   description: >
     Queries RTT station departures to find a specific train by time/destination.
     Supports multiple backup trains (comma-separated times), conditional detailed lookups,
