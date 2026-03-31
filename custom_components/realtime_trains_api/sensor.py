@@ -21,6 +21,7 @@ import homeassistant.util.dt as dt_util
 
 from .const import (
     CONF_API_TOKEN as RTT_CONF_API_TOKEN,
+    CONF_REFRESH_TOKEN as RTT_CONF_REFRESH_TOKEN,
     CONF_AUTOADJUSTSCANS,
     CONF_END,
     CONF_JOURNEYDATA,
@@ -250,16 +251,17 @@ async def async_setup_platform(
     interval = _coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
     autoadjustscans = config[CONF_AUTOADJUSTSCANS]
     token = config.get(RTT_CONF_API_TOKEN)
+    refresh_token = config.get(RTT_CONF_REFRESH_TOKEN)
 
-    if not token:
-        _LOGGER.error("Realtime Trains API entry is missing a token.")
+    if not token and not refresh_token:
+        _LOGGER.error("Realtime Trains API entry is missing credentials.")
         return
 
     queries = config[CONF_QUERIES]
 
 
     client = async_get_clientsession(hass)
-    api_client = RealtimeTrainsApiClient(client, token)
+    api_client = RealtimeTrainsApiClient(client, token, refresh_token)
 
     sensors = _create_sensors(api_client, autoadjustscans, interval, queries)
 
@@ -274,9 +276,10 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensors from a config entry."""
     token = entry.data.get(RTT_CONF_API_TOKEN)
+    refresh_token = entry.data.get(RTT_CONF_REFRESH_TOKEN)
 
-    if not token:
-        _LOGGER.error("Realtime Trains API entry %s is missing a token", entry.entry_id)
+    if not token and not refresh_token:
+        _LOGGER.error("Realtime Trains API entry %s is missing credentials", entry.entry_id)
         return
 
     interval = _coerce_scan_interval(entry.options.get(CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)))
@@ -288,7 +291,7 @@ async def async_setup_entry(
         return
 
     client = async_get_clientsession(hass)
-    api_client = RealtimeTrainsApiClient(client, token)
+    api_client = RealtimeTrainsApiClient(client, token, refresh_token)
 
     sensors = _create_sensors(api_client, autoadjustscans, interval, queries, entry.entry_id)
 
@@ -373,6 +376,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             if isinstance(platform, str) and platform.strip()
         }
         self._interval = interval
+        self._entry_id = entry_id
 
         self._name = default_sensor_name if sensor_name is None else sensor_name
         self._state = None
@@ -495,6 +499,20 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             else:
                 self.async_update = self._async_update
 
+    async def _async_refresh_token(self) -> bool:
+        """Refresh the access token."""
+        try:
+            await self._api.async_get_access_token()
+            if self._entry_id:
+                entry = self.hass.config_entries.async_get_entry(self._entry_id)
+                if entry:
+                    new_data = dict(entry.data)
+                    new_data[RTT_CONF_API_TOKEN] = self._api.token
+                    self.hass.config_entries.async_update_entry(entry, data=new_data)
+            return True
+        except RealtimeTrainsApiAuthError as err:
+            _LOGGER.error("Failed to refresh RTT access token: %s", err)
+            return False
 
     @property
     def unique_id(self):
@@ -521,8 +539,21 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 now.strftime("%H%M")
             )
         except RealtimeTrainsApiAuthError:
-            self._state = "Credentials invalid"
-            self._data = {}
+            if not await self._async_refresh_token():
+                self._state = "Credentials invalid"
+                self._data = {}
+                return
+            
+            # Retry
+            try:
+                self._data = await self._api.fetch_location_services(
+                    self._journey_start,
+                    self._journey_end,
+                    now.date(),
+                    now.strftime("%H%M")
+                )
+            except RealtimeTrainsApiError:
+                self._data = {}
         except RealtimeTrainsApiNotFoundError:
             self._data = {}
         except RealtimeTrainsApiError as err:
@@ -536,15 +567,26 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 train['service_uid'],
                 scheduled_departure,
             )
+        except RealtimeTrainsApiAuthError:
+            if not await self._async_refresh_token():
+                self._state = "Credentials invalid"
+                return
+            
+            # Retry
+            try:
+                data = await self._api.fetch_service_details(
+                    train['service_uid'],
+                    scheduled_departure,
+                )
+            except RealtimeTrainsApiError as err:
+                _LOGGER.warning("Could not populate arrival times after retry: %s", err)
+                return
         except RealtimeTrainsApiNotFoundError:
             _LOGGER.warning(
                 "Could not find %s in stops for service %s.",
                 self._journey_end,
                 train['service_uid'],
             )
-            return
-        except RealtimeTrainsApiAuthError:
-            self._state = "Credentials invalid"
             return
         except RealtimeTrainsApiError as err:
             _LOGGER.warning("Could not populate arrival times: %s", err)

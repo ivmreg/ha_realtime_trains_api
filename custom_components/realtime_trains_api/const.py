@@ -7,6 +7,7 @@ PLATFORMS = ["sensor"]
 DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
 
 CONF_API_TOKEN = "token"
+CONF_REFRESH_TOKEN = "refresh_token"
 CONF_QUERIES = "queries"
 CONF_AUTOADJUSTSCANS = "auto_adjust_scans"
 

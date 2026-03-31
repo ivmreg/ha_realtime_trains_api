@@ -25,30 +25,77 @@ class RealtimeTrainsApiNotFoundError(RealtimeTrainsApiError):
 class RealtimeTrainsApiClient:
     """Simple async client for the Realtime Trains Pull API."""
 
-    def __init__(self, session: ClientSession, token: str) -> None:
+    def __init__(self, session: ClientSession, token: str, refresh_token: str | None = None) -> None:
         self._session = session
-        self._headers = {"Authorization": f"Bearer {token}"}
+        self._token = token
+        self._refresh_token = refresh_token
+        self._headers = {"Authorization": f"Bearer {token}", "accept": "application/json"}
+
+    @property
+    def token(self) -> str:
+        """Return current access token."""
+        return self._token
+
+    async def async_get_access_token(self) -> str:
+        """Fetch a new access token using the refresh token."""
+        if not self._refresh_token:
+            _LOGGER.debug("Access token refresh requested but no refresh token available")
+            raise RealtimeTrainsApiAuthError("No refresh token available")
+
+        url = f"{API_BASE}api/get_access_token"
+        masked_refresh = f"{self._refresh_token[:5]}...{self._refresh_token[-5:]}" if len(self._refresh_token) > 10 else "***"
+        _LOGGER.debug("Requesting new access token from %s using refresh token %s", url, masked_refresh)
+        
+        headers = {
+            "Authorization": f"Bearer {self._refresh_token}",
+            "accept": "application/json",
+        }
+        
+        try:
+            async with self._session.get(url, headers=headers) as response:
+                _LOGGER.debug("Token refresh response status: %s", response.status)
+                if response.status == 200:
+                    json_data = await response.json()
+                    _LOGGER.debug("Token refresh response body: %s", json_data)
+                    new_token = json_data.get("token")
+                    if not new_token:
+                        _LOGGER.error("Token refresh response missing 'token' key")
+                        raise RealtimeTrainsApiAuthError("Response missing token")
+                    self._token = new_token
+                    self._headers["Authorization"] = f"Bearer {new_token}"
+                    _LOGGER.debug("Successfully refreshed RTT access token")
+                    return new_token
+                
+                body = await response.text()
+                _LOGGER.error("Failed to refresh token: %s. Response: %s", response.status, body)
+                raise RealtimeTrainsApiAuthError(f"Failed to refresh token: {response.status}")
+        except Exception as err:
+            if not isinstance(err, RealtimeTrainsApiAuthError):
+                _LOGGER.error("Connection error during token refresh: %s", err)
+            raise
 
     async def fetch_location_services(
         self,
         station: str,
         to_station: str | None = None,
         query_date: date | None = None,
-        time: str | None = None,
+        time: str | int | None = None,
     ) -> dict[str, Any]:
         """Fetch departures or arrivals for a location."""
-        # Note: the new API expects ISO 8601 datetimes. Since this integration
-        # largely monitors "next" trains, query_date and time aren't heavily
-        # mapped in sensor logic right now (it uses 'now'), but if provided
-        # we can pass them.
         params = [f"code={station}"]
         if to_station:
             params.append(f"filterTo={to_station}")
         if query_date:
-            if time and len(time) == 4:
-                # time is usually HHMM
-                iso_dt = f"{query_date.isoformat()}T{time[:2]}:{time[2:]}:00"
-                params.append(f"timeFrom={iso_dt}")
+            if time:
+                try:
+                    # Robustly handle time as HHMM (string or int)
+                    t_val = int(time)
+                    h = t_val // 100
+                    m = t_val % 100
+                    iso_dt = f"{query_date.isoformat()}T{h:02d}:{m:02d}:00"
+                    params.append(f"timeFrom={iso_dt}")
+                except (ValueError, TypeError):
+                    params.append(f"timeFrom={query_date.isoformat()}T00:00:00")
             else:
                 params.append(f"timeFrom={query_date.isoformat()}T00:00:00")
         elif time:
@@ -70,28 +117,31 @@ class RealtimeTrainsApiClient:
 
     async def _request(self, path: str) -> dict[str, Any]:
         url = f"{API_BASE}{path}"
-        async with self._session.get(url, headers=self._headers) as response:
-            if response.status == 200:
-                json_data = await response.json()
-                _LOGGER.debug("API response for %s: %s", path, json_data)
-                return json_data
-            if response.status in (401, 403):
-                raise RealtimeTrainsApiAuthError("Credentials invalid") from None
-            if response.status == 404:
-                _LOGGER.debug("Endpoint returned 404 for path %s", path)
-                raise RealtimeTrainsApiNotFoundError(
-                    f"Endpoint returned 404 for path {path}"
-                ) from None
-            body = await response.text()
-            body_len = len(body)
-            body_preview = body[:200]
-            _LOGGER.debug(
-                "Unexpected status %s for path %s (body len=%d, preview=%r)",
-                response.status,
-                path,
-                body_len,
-                body_preview,
-            )
-            raise RealtimeTrainsApiError(
-                f"Unexpected status {response.status}"
-            )
+        # Create headers copy for logging (mask Authorization)
+        log_headers = {k: (v if k.lower() != "authorization" else "Bearer ***") for k, v in self._headers.items()}
+        _LOGGER.debug("RTT API Request: GET %s, Headers: %s", url, log_headers)
+        
+        try:
+            async with self._session.get(url, headers=self._headers) as response:
+                _LOGGER.debug("RTT API Response Status: %s for %s", response.status, url)
+                
+                if response.status == 200:
+                    json_data = await response.json()
+                    _LOGGER.debug("RTT API Response Body (JSON): %s", json_data)
+                    return json_data
+                
+                if response.status in (401, 403):
+                    _LOGGER.warning("RTT API Authentication error (401/403) for %s", url)
+                    raise RealtimeTrainsApiAuthError("Credentials invalid") from None
+                
+                if response.status == 404:
+                    _LOGGER.debug("RTT API Resource not found (404) for %s", url)
+                    raise RealtimeTrainsApiNotFoundError(f"Endpoint returned 404 for path {path}") from None
+                
+                body = await response.text()
+                _LOGGER.error("RTT API Unexpected response %s for %s: %s", response.status, url, body)
+                raise RealtimeTrainsApiError(f"Unexpected status {response.status}")
+        except Exception as err:
+            if not isinstance(err, (RealtimeTrainsApiError)):
+                _LOGGER.error("RTT API Connection error for %s: %s", url, err)
+            raise

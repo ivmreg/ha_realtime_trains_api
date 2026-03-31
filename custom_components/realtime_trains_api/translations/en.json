@@ -3,7 +3,8 @@
         "step": {
             "user": {
                 "data": {
-                    "token": "API Token",
+                    "token": "Access Token",
+                    "refresh_token": "Refresh Token",
                     "auto_adjust_scans": "Auto adjust scan interval",
                     "scan_interval": "Scan interval (seconds)"
                 }
@@ -24,7 +25,9 @@
         },
         "error": {
             "invalid_crs": "Invalid CRS code. Must be exactly 3 uppercase letters.",
-            "required": "Required field."
+            "required": "Required field.",
+            "invalid_auth": "Authentication failed. Check your refresh token.",
+            "cannot_connect": "Failed to connect to RTT API."
         }
     }
 }

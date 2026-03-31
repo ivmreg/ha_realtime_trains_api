@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -13,6 +14,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_API_TOKEN as RTT_CONF_API_TOKEN,
+    CONF_REFRESH_TOKEN as RTT_CONF_REFRESH_TOKEN,
     CONF_AUTOADJUSTSCANS,
     CONF_END,
     CONF_JOURNEYDATA,
@@ -26,6 +28,9 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .rtt_api import RealtimeTrainsApiClient, RealtimeTrainsApiAuthError
+
+_LOGGER = logging.getLogger(__name__)
 
 FIELD_ADD_ANOTHER = "add_another"
 FIELD_EDIT_QUERIES = "edit_queries"
@@ -40,7 +45,7 @@ MAX_TIME_OFFSET_MINUTES = 12 * 60
 def _user_schema() -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(RTT_CONF_API_TOKEN): cv.string,
+            vol.Required(RTT_CONF_REFRESH_TOKEN): cv.string,
             vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,
             vol.Optional(
                 CONF_SCAN_INTERVAL,
@@ -190,23 +195,39 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            token = user_input.get(RTT_CONF_API_TOKEN, "")
-            if not token:
-                errors[RTT_CONF_API_TOKEN] = "required"
+            refresh_token = user_input.get(RTT_CONF_REFRESH_TOKEN, "").strip()
+            _LOGGER.debug("Starting RTT config flow validation with refresh token (truncated): %s...", refresh_token[:10] if refresh_token else "none")
+            
+            if not refresh_token:
+                errors[RTT_CONF_REFRESH_TOKEN] = "required"
             else:
-                token = token.strip()
-                if not token:
-                    errors[RTT_CONF_API_TOKEN] = "required"
-
-            if not errors:
-                user_input[RTT_CONF_API_TOKEN] = token
-                user_input[CONF_SCAN_INTERVAL] = int(user_input[CONF_SCAN_INTERVAL])
-                # Note: Token might be long, but unique_id based on a prefix or the token itself is fine
-                # Truncating to 30 chars for unique id if it's very long
-                await self.async_set_unique_id(token.lower()[:30])
-                self._abort_if_unique_id_configured()
-                self._config_data = dict(user_input)
-                return await self.async_step_query()
+                try:
+                    # Validate by getting the first access token
+                    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+                    session = async_get_clientsession(self.hass)
+                    # Create a temporary client to fetch the first token
+                    # Use 'none' as initial token since we are about to refresh
+                    client = RealtimeTrainsApiClient(session, "none", refresh_token)
+                    
+                    _LOGGER.debug("Attempting to fetch initial access token to validate refresh token")
+                    access_token = await client.async_get_access_token()
+                    _LOGGER.debug("Initial access token fetched successfully")
+                    
+                    user_input[RTT_CONF_API_TOKEN] = access_token
+                    user_input[RTT_CONF_REFRESH_TOKEN] = refresh_token
+                    user_input[CONF_SCAN_INTERVAL] = int(user_input[CONF_SCAN_INTERVAL])
+                    
+                    await self.async_set_unique_id(refresh_token.lower()[:30])
+                    self._abort_if_unique_id_configured()
+                    self._config_data = dict(user_input)
+                    _LOGGER.debug("Config flow user step completed successfully")
+                    return await self.async_step_query()
+                except RealtimeTrainsApiAuthError as err:
+                    _LOGGER.error("Authentication failed during config flow: %s", err)
+                    errors[RTT_CONF_REFRESH_TOKEN] = "invalid_auth"
+                except Exception as err:  # pylint: disable=broad-except
+                    _LOGGER.exception("Unexpected error during config flow validation: %s", err)
+                    errors["base"] = "cannot_connect"
 
         return self.async_show_form(
             step_id="user",
