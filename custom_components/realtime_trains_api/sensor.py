@@ -600,6 +600,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         last_report_station = None
         last_report_type = None
         last_report_time = None
+        last_before_start_interest_stop = None
 
         service = data.get("service", {})
         locations = service.get("locations", [])
@@ -615,23 +616,57 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             arr_data = temporal.get("arrival", {})
 
             # Determine last report status
+            is_actual = False
             if pass_data.get("realtimeActual"):
                 last_report_station = crs
                 last_report_type = 'Pass'
                 last_report_time = datetime.fromisoformat(pass_data["realtimeActual"])
+                is_actual = True
             elif dep_data.get("realtimeActual"):
                 last_report_station = crs
                 last_report_type = 'Departure'
                 last_report_time = datetime.fromisoformat(dep_data["realtimeActual"])
+                is_actual = True
             elif arr_data.get("realtimeActual"):
                 last_report_station = crs
                 last_report_type = 'Arrival'
                 last_report_time = datetime.fromisoformat(arr_data["realtimeActual"])
+                is_actual = True
 
             if crs == self._journey_start:
                 found_start = True
+                if last_before_start_interest_stop:
+                    stopsOfInterest.append(last_before_start_interest_stop)
 
-            if found_start and crs != self._journey_start:
+            if not found_start:
+                # Capture the LATEST interest stop that has already occurred before we reach the start
+                if (not self._stops_of_interest or crs in self._stops_of_interest) and is_actual:
+                    scheduled_stop_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal") or dep_data.get("scheduleAdvertised") or dep_data.get("scheduleInternal")
+                    estimated_stop_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
+                    
+                    if scheduled_stop_str:
+                        scheduled_stop = datetime.fromisoformat(scheduled_stop_str)
+                        if scheduled_stop.tzinfo is None:
+                            scheduled_stop = TIMEZONE.localize(scheduled_stop)
+                        
+                        if estimated_stop_str:
+                            estimated_stop = datetime.fromisoformat(estimated_stop_str)
+                            if estimated_stop.tzinfo is None:
+                                estimated_stop = TIMEZONE.localize(estimated_stop)
+                        else:
+                            estimated_stop = scheduled_stop
+                            
+                        last_before_start_interest_stop = {
+                            "stop": crs,
+                            "name": description,
+                            "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
+                            "estimate_stop": estimated_stop.strftime(STRFFORMAT),
+                            "journey_time_mins": _delta_seconds(estimated_stop, estimated_departure) // 60,
+                            "stops": stopCount,
+                            "actual": True,
+                        }
+
+            elif crs != self._journey_start:
                 display_as = temporal.get("displayAs") or ""
 
                 if self._journey_end and crs == self._journey_end and display_as != 'ORIGIN':
