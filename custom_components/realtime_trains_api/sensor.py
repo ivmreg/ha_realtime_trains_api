@@ -29,7 +29,6 @@ from .const import (
     CONF_QUERIES,
     CONF_SENSORNAME,
     CONF_START,
-    CONF_STOPS_OF_INTEREST,
     CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
@@ -64,7 +63,6 @@ _QUERY_SCHEME = vol.Schema(
         vol.Optional(CONF_JOURNEYDATA, default=0): cv.positive_int,
         vol.Optional(CONF_TIMEOFFSET, default=DEFAULT_TIMEOFFSET):
             vol.All(cv.time_period, cv.positive_timedelta),
-        vol.Optional(CONF_STOPS_OF_INTEREST): [cv.string],
         vol.Optional(CONF_PLATFORMS_OF_INTEREST): [cv.string],
     }
 )
@@ -175,11 +173,6 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
 
     journey_data = _coerce_positive_int(raw_query.get(CONF_JOURNEYDATA, 0))
     time_offset = _coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, DEFAULT_TIMEOFFSET))
-    stops = _ensure_list(raw_query.get(CONF_STOPS_OF_INTEREST, []))
-    stops = [stop.upper() for stop in stops]
-    for stop in stops:
-        if not CRS_CODE_PATTERN.match(stop):
-            raise ValueError(f"Invalid stop CRS code: {stop}")
     platforms = _ensure_list(raw_query.get(CONF_PLATFORMS_OF_INTEREST, []))
 
     return {
@@ -188,7 +181,6 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
         CONF_END: destination,
         CONF_JOURNEYDATA: journey_data,
         CONF_TIMEOFFSET: time_offset,
-        CONF_STOPS_OF_INTEREST: stops,
         CONF_PLATFORMS_OF_INTEREST: platforms,
     }
 
@@ -219,7 +211,6 @@ def _create_sensors(
             query[CONF_JOURNEYDATA],
             query[CONF_TIMEOFFSET],
             autoadjustscans,
-            query[CONF_STOPS_OF_INTEREST],
             query[CONF_PLATFORMS_OF_INTEREST],
             interval,
             entry_id,
@@ -325,7 +316,6 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         journey_data_for_next_X_trains: int,
         timeoffset: timedelta,
         autoadjustscans: bool,
-        stops_of_interest: list[str],
         platforms_of_interest: list[str],
         interval: timedelta,
         entry_id: str | None = None,
@@ -370,7 +360,6 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         self._api = api_client
         self._timeoffset = timeoffset
         self._autoadjustscans = autoadjustscans
-        self._stops_of_interest = [stop.upper() for stop in stops_of_interest]
         self._platforms_of_interest = {
             platform.strip()
             for platform in platforms_of_interest
@@ -606,15 +595,9 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             _LOGGER.warning("Could not populate arrival times: %s", err)
             return
 
-        stopsOfInterest = []
-        stopCount = -1  # origin counts as first stop in the returned json
-        found = False
-        found_start = False
-
         last_report_station = None
         last_report_type = None
         last_report_time = None
-        last_report_idx = -1
 
         service = data.get("service", {})
         locations = service.get("locations", [])
@@ -625,19 +608,23 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             # We'll take the first reason for simplicity, usually it's the primary one
             train["reason"] = reasons[0].get("shortText")
 
-        # 1. First pass: find the last reported station index
+        found = False
+        found_start = False
+        stopCount = -1
+
         for i, stop in enumerate(locations):
+            stop_location = stop.get("location", {})
+            crs = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
+            
             temporal = stop.get("temporalData", {})
             pass_act = temporal.get("pass", {}).get("realtimeActual")
             dep_act = temporal.get("departure", {}).get("realtimeActual")
             arr_act = temporal.get("arrival", {}).get("realtimeActual")
             
             if pass_act or dep_act or arr_act:
-                last_report_idx = i
                 last_report_time_str = pass_act or dep_act or arr_act
                 last_report_time = datetime.fromisoformat(last_report_time_str)
-                stop_location = stop.get("location", {})
-                last_report_station = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
+                last_report_station = crs
                 if pass_act:
                     last_report_type = "Pass"
                 elif dep_act:
@@ -645,116 +632,62 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 else:
                     last_report_type = "Arrival"
 
-        # 2. Second pass: collect stops of interest starting from the last report (or beginning)
-        for i, stop in enumerate(locations):
-            stop_location = stop.get("location", {})
-            crs = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
-            description = stop_location.get("description", "")
-
-            temporal = stop.get("temporalData", {})
-            pass_data = temporal.get("pass", {})
-            dep_data = temporal.get("departure", {})
-            arr_data = temporal.get("arrival", {})
-
             if crs == self._journey_start:
                 found_start = True
 
-            # We want to show stops that are:
-            # - In the user's interest list (or the final destination)
-            # - At or after the current position of the train (last_report_idx)
-            # - Not the boarding station itself (since that's the main state)
-            
-            is_at_or_after_report = (i >= last_report_idx)
-            is_interest = (not self._stops_of_interest or crs in self._stops_of_interest)
-            
-            if is_at_or_after_report:
-                if crs == self._journey_end and found_start:
-                    display_as = temporal.get("displayAs") or ""
-                    if display_as != 'ORIGIN':
-                        scheduled_arrival_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal")
-                        estimated_arrival_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
+            if crs == self._journey_end and found_start:
+                display_as = temporal.get("displayAs") or ""
+                if display_as != 'ORIGIN':
+                    arr_data = temporal.get("arrival", {})
+                    scheduled_arrival_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal")
+                    estimated_arrival_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
 
-                        if scheduled_arrival_str:
-                            scheduled_arrival = datetime.fromisoformat(scheduled_arrival_str)
-                            if scheduled_arrival.tzinfo is None:
-                                scheduled_arrival = TIMEZONE.localize(scheduled_arrival)
+                    if scheduled_arrival_str:
+                        scheduled_arrival = datetime.fromisoformat(scheduled_arrival_str)
+                        if scheduled_arrival.tzinfo is None:
+                            scheduled_arrival = TIMEZONE.localize(scheduled_arrival)
 
-                            if estimated_arrival_str:
-                                estimated_arrival = datetime.fromisoformat(estimated_arrival_str)
-                                if estimated_arrival.tzinfo is None:
-                                    estimated_arrival = TIMEZONE.localize(estimated_arrival)
-                            else:
-                                estimated_arrival = scheduled_arrival
-
-                            status = "OK"
-                            if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
-                                status = "Cancelled"
-                            elif estimated_arrival > scheduled_arrival:
-                                status = "Delayed"
-
-                            newtrain = {
-                                "stops_of_interest": stopsOfInterest,
-                                "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
-                                "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
-                                "journey_time_mins": _delta_seconds(estimated_arrival, estimated_departure) // 60,
-                                "stops": stopCount,
-                                "status": status,
-                            }
-                            train.update(newtrain)
-                            found = True
-                            break
-
-                elif is_interest and crs != self._journey_start:
-                    # Determine best times to show for this stop
-                    # If it's a pass, use pass data. If it's a call, use arrival.
-                    time_source = arr_data if arr_data else (pass_data if pass_data else dep_data)
-                    scheduled_stop_str = time_source.get("scheduleAdvertised") or time_source.get("scheduleInternal")
-                    estimated_stop_str = time_source.get("realtimeActual") or time_source.get("realtimeForecast") or time_source.get("realtimeEstimate")
-
-                    if scheduled_stop_str:
-                        scheduled_stop = datetime.fromisoformat(scheduled_stop_str)
-                        if scheduled_stop.tzinfo is None:
-                            scheduled_stop = TIMEZONE.localize(scheduled_stop)
-
-                        if estimated_stop_str:
-                            estimated_stop = datetime.fromisoformat(estimated_stop_str)
-                            if estimated_stop.tzinfo is None:
-                                estimated_stop = TIMEZONE.localize(estimated_stop)
+                        if estimated_arrival_str:
+                            estimated_arrival = datetime.fromisoformat(estimated_arrival_str)
+                            if estimated_arrival.tzinfo is None:
+                                estimated_arrival = TIMEZONE.localize(estimated_arrival)
                         else:
-                            estimated_stop = scheduled_stop
+                            estimated_arrival = scheduled_arrival
 
-                        stopsOfInterest.append(
-                            {
-                                "stop": crs,
-                                "name": description,
-                                "scheduled_stop": scheduled_stop.strftime(STRFFORMAT),
-                                "estimate_stop": estimated_stop.strftime(STRFFORMAT),
-                                "journey_time_mins": _delta_seconds(estimated_stop, estimated_departure) // 60,
-                                "stops": stopCount,
-                                "actual": (i <= last_report_idx)
-                            }
-                        )
+                        status = "OK"
+                        if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
+                            status = "Cancelled"
+                        elif estimated_arrival > scheduled_arrival:
+                            status = "Delayed"
+
+                        newtrain = {
+                            "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
+                            "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
+                            "journey_time_mins": _delta_seconds(estimated_arrival, estimated_departure) // 60,
+                            "stops": stopCount,
+                            "status": status,
+                        }
+                        train.update(newtrain)
+                        found = True
             
             stopCount += 1
-        
-        # If no destination specified, just add stops of interest without destination arrival info
-        if not self._journey_end:
-            found = True
-            train["stops_of_interest"] = stopsOfInterest
-            train["stops"] = stopCount
-        elif not found:
+
+        if self._journey_end and not found:
             _LOGGER.warning(
                 "Could not find %s in stops for service %s.",
                 self._journey_end,
                 train['service_uid'],
             )
 
+        if not self._journey_end:
+            train["stops"] = stopCount
+
         if last_report_station is not None:
             train["last_report_station"] = last_report_station
             train["last_report_type"] = last_report_type
             train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
 
-    @property
+    @property    @property
     def extra_state_attributes(self):
         """Return other details about the sensor state."""
         attrs = {}

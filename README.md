@@ -97,9 +97,7 @@ sensor:
         # (WAL in this case) to destination (WAT in this case) will hit 
         # the API to lookup the number of stops, journey time and estimated
         # arrival time to the destination (WAT in this case).
-        journey_data_for_next_X_trains: 5 
-        stops_of_interest:
-          - VXH # a stop_of_interest will add data about this stop to each train's data (only if journey_data is gathered for that journey).  Means you can add more context to the train journey (e.g. my commute can start at two stops for some trains, only one for others meaning it might change my choice of train if I can get on at VXH instead of WAT)
+        journey_data_for_next_X_trains: 5
       - origin: WAT
         destination: WAL
         sensor_name: My Custom Journey # this will appear as 'sensor.my_custom_journey'
@@ -142,6 +140,16 @@ rest_command:
     url: "https://data.rtt.io/gb-nr/service?identity={{ uid }}&departureDate={{ date }}"
     headers:
       Authorization: "Bearer !secret rtt_token"
+```
+
+3. Import the `blueprint.yaml` into your Home Assistant instance to create automations based on train schedules.
+ date }}"
+    headers:
+      Authorization: "Bearer !secret rtt_token"
+```
+
+3. Import the `blueprint.yaml` into your Home Assistant instance to create automations based on train schedules.
+     Authorization: "Bearer !secret rtt_token"
 ```
 
 3. Import the `blueprint.yaml` into your Home Assistant instance to create automations based on train schedules.

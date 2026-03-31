@@ -22,7 +22,6 @@ from .const import (
     CONF_QUERIES,
     CONF_SENSORNAME,
     CONF_START,
-    CONF_STOPS_OF_INTEREST,
     CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
@@ -35,7 +34,6 @@ _LOGGER = logging.getLogger(__name__)
 FIELD_ADD_ANOTHER = "add_another"
 FIELD_EDIT_QUERIES = "edit_queries"
 FIELD_PLATFORMS = "platforms_input"
-FIELD_STOPS = "stops_input"
 FIELD_TIME_OFFSET = "time_offset_minutes"
 MIN_SCAN_INTERVAL_SECONDS = 30
 MAX_SCAN_INTERVAL_SECONDS = 6 * 3600
@@ -68,7 +66,6 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Optional(FIELD_TIME_OFFSET, default=defaults.get(FIELD_TIME_OFFSET, 0)): vol.All(
                 vol.Coerce(int), vol.Range(min=0, max=MAX_TIME_OFFSET_MINUTES)
             ),
-            vol.Optional(FIELD_STOPS, default=defaults.get(FIELD_STOPS, "")): cv.string,
             vol.Optional(FIELD_PLATFORMS, default=defaults.get(FIELD_PLATFORMS, "")): cv.string,
             vol.Optional(FIELD_ADD_ANOTHER, default=False): bool,
         }
@@ -111,13 +108,6 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
     if time_offset < 0:
         time_offset = 0
 
-    stops_raw = _split_csv(user_input.get(FIELD_STOPS, ""))
-    stops = [stop.upper() for stop in stops_raw]
-    for stop in stops:
-        if not CRS_CODE_PATTERN.match(stop):
-            errors[FIELD_STOPS] = "invalid_crs"
-            break
-
     platforms = _split_csv(user_input.get(FIELD_PLATFORMS, ""))
 
     add_another = bool(user_input.get(FIELD_ADD_ANOTHER))
@@ -128,7 +118,6 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
         CONF_END: destination,
         CONF_JOURNEYDATA: journey_data,
         CONF_TIMEOFFSET: time_offset,
-        CONF_STOPS_OF_INTEREST: stops,
         CONF_PLATFORMS_OF_INTEREST: platforms,
     }
 
@@ -145,16 +134,14 @@ def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             minutes = 0
 
-    stops = raw_query.get(CONF_STOPS_OF_INTEREST, []) or []
     platforms = raw_query.get(CONF_PLATFORMS_OF_INTEREST, []) or []
 
     return {
         CONF_SENSORNAME: raw_query.get(CONF_SENSORNAME, "") or "",
         CONF_START: raw_query.get(CONF_START, ""),
-    CONF_END: (raw_query.get(CONF_END) or ""),
+        CONF_END: (raw_query.get(CONF_END) or ""),
         CONF_JOURNEYDATA: raw_query.get(CONF_JOURNEYDATA, 0),
         FIELD_TIME_OFFSET: minutes,
-        FIELD_STOPS: ", ".join(stops),
         FIELD_PLATFORMS: ", ".join(platforms),
         FIELD_ADD_ANOTHER: False,
     }
@@ -249,7 +236,6 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
                     CONF_END: query.get(CONF_END) or "",
                     CONF_JOURNEYDATA: query.get(CONF_JOURNEYDATA, 0),
                     FIELD_TIME_OFFSET: query.get(CONF_TIMEOFFSET, 0),
-                    FIELD_STOPS: user_input.get(FIELD_STOPS, ""),
                     FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
                     FIELD_ADD_ANOTHER: add_another,
                 }
@@ -354,7 +340,6 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_END: user_input.get(CONF_END, ""),
                     CONF_JOURNEYDATA: user_input.get(CONF_JOURNEYDATA, 0),
                     FIELD_TIME_OFFSET: user_input.get(FIELD_TIME_OFFSET, 0),
-                    FIELD_STOPS: user_input.get(FIELD_STOPS, ""),
                     FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
                     FIELD_ADD_ANOTHER: add_another,
                 }

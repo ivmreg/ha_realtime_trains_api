@@ -16,7 +16,6 @@
                     "destination": "Destination Station (CRS Code, Optional)",
                     "journey_data_for_next_X_trains": "Number of future trains to include",
                     "time_offset_minutes": "Time offset (minutes)",
-                    "stops_input": "Stops of interest (CRS codes, comma separated)",
                     "platforms_input": "Platforms of interest (comma separated)",
                     "add_another": "Add another query"
                 },
