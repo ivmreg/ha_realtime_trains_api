@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta, timezone
 
 from custom_components.realtime_trains_api.sensor_helpers import (
+    collect_subsequent_stops,
     build_default_sensor_name,
+    find_last_report,
     parse_rtt_datetime,
     retry_with_auth_refresh,
+    subsequent_stop_start_index,
 )
 from custom_components.realtime_trains_api.rtt_api import (
     RealtimeTrainsApiAuthError,
@@ -131,3 +134,114 @@ async def test_retry_with_auth_refresh_reports_retry_failure() -> None:
     assert attempts == 2
     assert len(retry_errors) == 1
     assert isinstance(retry_errors[0], RealtimeTrainsApiError)
+
+
+def test_find_last_report_returns_latest_actual_report() -> None:
+    locations = [
+        {
+            "location": {"shortCodes": ["AAA"], "description": "Alpha"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "departure": {"realtimeActual": "2026-04-01T10:00:00"},
+            },
+        },
+        {
+            "location": {"shortCodes": ["BBB"], "description": "Beta"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "arrival": {"realtimeActual": "2026-04-01T10:05:00"},
+            },
+        },
+        {
+            "location": {"shortCodes": ["CCC"], "description": "Gamma"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "pass": {"realtimeActual": "2026-04-01T10:10:00"},
+            },
+        },
+    ]
+
+    last_report_idx, last_report_type, last_report_station, last_report_time = find_last_report(
+        locations,
+        timezone.utc,
+    )
+
+    assert last_report_idx == 2
+    assert last_report_type == "Pass"
+    assert last_report_station == "CCC"
+    assert last_report_time == datetime(2026, 4, 1, 10, 10, tzinfo=timezone.utc)
+
+
+def test_subsequent_stop_start_index_steps_back_after_arrival() -> None:
+    assert subsequent_stop_start_index(4, "Arrival") == 3
+    assert subsequent_stop_start_index(4, "Departure") == 4
+    assert subsequent_stop_start_index(-1, None) == 0
+
+
+def test_collect_subsequent_stops_uses_expected_time_source_and_filters() -> None:
+    locations = [
+        {
+            "location": {"shortCodes": ["AAA"], "description": "Alpha"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "arrival": {},
+                "departure": {
+                    "scheduleAdvertised": "2026-04-01T10:00:00",
+                    "realtimeForecast": "2026-04-01T10:02:00",
+                },
+            },
+        },
+        {
+            "location": {"shortCodes": ["BBB"], "description": "Beta"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "arrival": {
+                    "scheduleAdvertised": "2026-04-01T10:10:00",
+                    "realtimeActual": "2026-04-01T10:12:00",
+                },
+            },
+        },
+        {
+            "location": {"shortCodes": ["CCC"], "description": "Gamma"},
+            "temporalData": {
+                "displayAs": "PASS",
+                "arrival": {
+                    "scheduleAdvertised": "2026-04-01T10:20:00",
+                    "realtimeEstimate": "2026-04-01T10:21:00",
+                },
+            },
+        },
+        {
+            "location": {"shortCodes": ["DDD"], "description": "Delta"},
+            "temporalData": {
+                "displayAs": "DEST",
+                "arrival": {
+                    "scheduleAdvertised": "2026-04-01T10:30:00",
+                    "realtimeActual": "2026-04-01T10:31:00",
+                },
+            },
+        },
+    ]
+
+    result = collect_subsequent_stops(locations, 0, timezone.utc)
+
+    assert result == [
+        {
+            "stop": "AAA",
+            "name": "Alpha",
+            "scheduled": "01-04-2026 10:00",
+            "estimated": "01-04-2026 10:02",
+        },
+        {
+            "stop": "BBB",
+            "name": "Beta",
+            "scheduled": "01-04-2026 10:10",
+            "estimated": "01-04-2026 10:12",
+        },
+        {
+            "stop": "DDD",
+            "name": "Delta",
+            "scheduled": "01-04-2026 10:30",
+            "estimated": "01-04-2026 10:31",
+        },
+    ]

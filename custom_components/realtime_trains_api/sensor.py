@@ -34,7 +34,14 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
 )
 from .normalization import coerce_positive_int, coerce_scan_interval, coerce_time_offset, split_csv
-from .sensor_helpers import build_default_sensor_name, parse_rtt_datetime, retry_with_auth_refresh
+from .sensor_helpers import (
+    build_default_sensor_name,
+    collect_subsequent_stops,
+    find_last_report,
+    parse_rtt_datetime,
+    retry_with_auth_refresh,
+    subsequent_stop_start_index,
+)
 from .rtt_api import (
     RealtimeTrainsApiAuthError,
     RealtimeTrainsApiClient,
@@ -494,54 +501,27 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         if data is None:
             return
 
-        last_report_station = None
-        last_report_type = None
-        last_report_time = None
-
         service = data.get("service", {})
         locations = service.get("locations", [])
-        
+
         # Extract reasons if available
         reasons = service.get("reasons", [])
         if reasons:
             # We'll take the first reason for simplicity, usually it's the primary one
             train["reason"] = reasons[0].get("shortText")
 
-        last_report_idx = -1
-        # 1. First pass: find the last reported position
-        for i, stop in enumerate(locations):
-            temporal = stop.get("temporalData", {})
-            pass_act = temporal.get("pass", {}).get("realtimeActual")
-            dep_act = temporal.get("departure", {}).get("realtimeActual")
-            arr_act = temporal.get("arrival", {}).get("realtimeActual")
-            
-            if pass_act or dep_act or arr_act:
-                last_report_idx = i
-                last_report_time_str = pass_act or dep_act or arr_act
-                last_report_time = parse_rtt_datetime(last_report_time_str, TIMEZONE)
-                last_report_station = stop.get("location", {}).get("shortCodes", [None])[0]
-                if pass_act:
-                    last_report_type = "Pass"
-                elif dep_act:
-                    last_report_type = "Departure"
-                else:
-                    last_report_type = "Arrival"
-
-        # Determine index from which to start subsequent_stops
-        # "all stops from the one that the train JUST departed (inclusive)"
-        just_departed_idx = 0
-        if last_report_idx != -1:
-            if last_report_type == "Arrival":
-                just_departed_idx = max(0, last_report_idx - 1)
-            else:
-                just_departed_idx = last_report_idx
+        last_report_idx, last_report_type, last_report_station, last_report_time = find_last_report(
+            locations,
+            TIMEZONE,
+        )
+        just_departed_idx = subsequent_stop_start_index(last_report_idx, last_report_type)
 
         found_dest = False
         found_start = False
         stopCount = -1
-        subsequent_stops = []
+        subsequent_stops = collect_subsequent_stops(locations, just_departed_idx, TIMEZONE)
 
-        # 2. Second pass: collect data
+        # Second pass: populate destination summary and stop counts.
         for i, stop in enumerate(locations):
             stop_location = stop.get("location", {})
             crs = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
@@ -550,28 +530,6 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
             if crs == self._journey_start:
                 found_start = True
-
-            # Collect subsequent stops: from just_departed_idx to end
-            if i >= just_departed_idx:
-                if display_as in ["CALL", "DEST"]:
-                    # Get arrival data for the stop
-                    arr_data = temporal.get("arrival", {})
-                    # If it's the very first stop, we use departure data
-                    time_source = arr_data if arr_data else temporal.get("departure", {})
-                    
-                    scheduled_str = time_source.get("scheduleAdvertised") or time_source.get("scheduleInternal")
-                    estimated_str = time_source.get("realtimeActual") or time_source.get("realtimeForecast") or time_source.get("realtimeEstimate")
-
-                    if scheduled_str:
-                        scheduled_dt = parse_rtt_datetime(scheduled_str, TIMEZONE)
-                        estimated_dt = parse_rtt_datetime(estimated_str, TIMEZONE) if estimated_str else scheduled_dt
-
-                        subsequent_stops.append({
-                            "stop": crs,
-                            "name": stop_location.get("description", ""),
-                            "scheduled": scheduled_dt.strftime(STRFFORMAT),
-                            "estimated": estimated_dt.strftime(STRFFORMAT),
-                        })
 
             # Handle destination filtering/info
             if crs == self._journey_end and found_start:
