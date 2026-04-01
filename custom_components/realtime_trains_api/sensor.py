@@ -33,6 +33,7 @@ from .const import (
     CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
 )
+from .normalization import coerce_positive_int, coerce_scan_interval, coerce_time_offset, split_csv
 from .rtt_api import (
     RealtimeTrainsApiAuthError,
     RealtimeTrainsApiClient,
@@ -77,78 +78,6 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-def _coerce_scan_interval(value: Any) -> timedelta:
-    if isinstance(value, timedelta):
-        return value
-    if isinstance(value, dict):
-        try:
-            return timedelta(**{key: int(val) for key, val in value.items()})
-        except (TypeError, ValueError):
-            return DEFAULT_SCAN_INTERVAL
-    if isinstance(value, (int, float)):
-        seconds = int(value)
-        if seconds <= 0:
-            return DEFAULT_SCAN_INTERVAL
-        return timedelta(seconds=seconds)
-    if isinstance(value, str):
-        try:
-            seconds = int(float(value))
-        except (TypeError, ValueError):
-            return DEFAULT_SCAN_INTERVAL
-        if seconds <= 0:
-            return DEFAULT_SCAN_INTERVAL
-        return timedelta(seconds=seconds)
-    return DEFAULT_SCAN_INTERVAL
-
-
-def _coerce_positive_int(value: Any) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return 0
-    return max(0, number)
-
-
-def _coerce_time_offset(value: Any) -> timedelta:
-    if isinstance(value, timedelta):
-        return value
-    if isinstance(value, dict):
-        try:
-            return timedelta(**{key: int(val) for key, val in value.items()})
-        except (TypeError, ValueError):
-            return DEFAULT_TIMEOFFSET
-    if isinstance(value, (int, float)):
-        minutes = int(value)
-        if minutes < 0:
-            minutes = 0
-        return timedelta(minutes=minutes)
-    if isinstance(value, str):
-        try:
-            minutes = int(float(value.strip()))
-        except (TypeError, ValueError):
-            return DEFAULT_TIMEOFFSET
-        return timedelta(minutes=max(0, minutes))
-    return DEFAULT_TIMEOFFSET
-
-
-def _ensure_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        cleaned = value.replace("\n", ",")
-        return [item.strip() for item in cleaned.split(",") if item.strip()]
-    if isinstance(value, (list, tuple, set)):
-        iterable = value
-    else:
-        iterable = [value]
-    result: list[str] = []
-    for item in iterable:
-        text = str(item).strip()
-        if text:
-            result.append(text)
-    return result
-
-
 def _normalize_query(raw_query: Any) -> dict[str, Any]:
     if not isinstance(raw_query, dict):
         raise ValueError("Query configuration must be a mapping")
@@ -171,9 +100,9 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
     if destination and not CRS_CODE_PATTERN.match(destination):
         raise ValueError(f"Invalid destination CRS code: {destination}")
 
-    journey_data = _coerce_positive_int(raw_query.get(CONF_JOURNEYDATA, 0))
-    time_offset = _coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, DEFAULT_TIMEOFFSET))
-    platforms = _ensure_list(raw_query.get(CONF_PLATFORMS_OF_INTEREST, []))
+    journey_data = coerce_positive_int(raw_query.get(CONF_JOURNEYDATA, 0))
+    time_offset = coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, DEFAULT_TIMEOFFSET), DEFAULT_TIMEOFFSET)
+    platforms = split_csv(raw_query.get(CONF_PLATFORMS_OF_INTEREST, []))
 
     return {
         CONF_SENSORNAME: sensor_name,
@@ -240,7 +169,7 @@ async def async_setup_platform(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Get the realtime_train sensor."""
-    interval = _coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
+    interval = coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL), DEFAULT_SCAN_INTERVAL)
     autoadjustscans = config[CONF_AUTOADJUSTSCANS]
     token = config.get(RTT_CONF_API_TOKEN)
     refresh_token = config.get(RTT_CONF_REFRESH_TOKEN)
@@ -274,7 +203,10 @@ async def async_setup_entry(
         _LOGGER.error("Realtime Trains API entry %s is missing credentials", entry.entry_id)
         return
 
-    interval = _coerce_scan_interval(entry.options.get(CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)))
+    interval = coerce_scan_interval(
+        entry.options.get(CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)),
+        DEFAULT_SCAN_INTERVAL,
+    )
     autoadjustscans = entry.options.get(CONF_AUTOADJUSTSCANS, entry.data.get(CONF_AUTOADJUSTSCANS, False))
     queries = entry.options.get(CONF_QUERIES) or entry.data.get(CONF_QUERIES, [])
 
@@ -687,7 +619,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             train["last_report_type"] = last_report_type
             train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
 
-    @property    @property
+    @property
     def extra_state_attributes(self):
         """Return other details about the sensor state."""
         attrs = {}

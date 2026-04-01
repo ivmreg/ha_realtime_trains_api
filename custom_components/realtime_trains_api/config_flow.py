@@ -27,6 +27,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .normalization import coerce_positive_int, coerce_scan_interval_seconds, coerce_time_offset, split_csv
 from .rtt_api import RealtimeTrainsApiClient, RealtimeTrainsApiAuthError
 
 _LOGGER = logging.getLogger(__name__)
@@ -72,13 +73,6 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     )
 
 
-def _split_csv(value: str) -> list[str]:
-    if not value:
-        return []
-    cleaned = value.replace("\n", ",")
-    return [item.strip() for item in cleaned.split(",") if item.strip()]
-
-
 def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bool, dict[str, str]]:
     errors: dict[str, str] = {}
 
@@ -100,15 +94,9 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
     if sensor_name == "":
         sensor_name = None
 
-    journey_data = int(user_input.get(CONF_JOURNEYDATA, 0))
-    if journey_data < 0:
-        journey_data = 0
-
-    time_offset = int(user_input.get(FIELD_TIME_OFFSET, 0))
-    if time_offset < 0:
-        time_offset = 0
-
-    platforms = _split_csv(user_input.get(FIELD_PLATFORMS, ""))
+    journey_data = coerce_positive_int(user_input.get(CONF_JOURNEYDATA, 0))
+    time_offset = coerce_positive_int(user_input.get(FIELD_TIME_OFFSET, 0))
+    platforms = split_csv(user_input.get(FIELD_PLATFORMS, ""))
 
     add_another = bool(user_input.get(FIELD_ADD_ANOTHER))
 
@@ -125,14 +113,8 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
 
 
 def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
-    time_offset = raw_query.get(CONF_TIMEOFFSET, 0)
-    if isinstance(time_offset, timedelta):
-        minutes = int(time_offset.total_seconds() // 60)
-    else:
-        try:
-            minutes = int(time_offset)
-        except (TypeError, ValueError):
-            minutes = 0
+    time_offset = coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, timedelta()), timedelta())
+    minutes = int(time_offset.total_seconds() // 60)
 
     platforms = raw_query.get(CONF_PLATFORMS_OF_INTEREST, []) or []
 
@@ -145,26 +127,6 @@ def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
         FIELD_PLATFORMS: ", ".join(platforms),
         FIELD_ADD_ANOTHER: False,
     }
-
-
-def _coerce_scan_interval_seconds(value: Any) -> int:
-    if isinstance(value, timedelta):
-        return max(MIN_SCAN_INTERVAL_SECONDS, int(value.total_seconds()))
-    if isinstance(value, (int, float)):
-        return max(MIN_SCAN_INTERVAL_SECONDS, int(value))
-    if isinstance(value, str):
-        try:
-            number = int(float(value.strip()))
-        except (TypeError, ValueError):
-            return int(DEFAULT_SCAN_INTERVAL.total_seconds())
-        return max(MIN_SCAN_INTERVAL_SECONDS, number)
-    if isinstance(value, dict):
-        try:
-            number = timedelta(**{key: int(val) for key, val in value.items()})
-        except (TypeError, ValueError):
-            return int(DEFAULT_SCAN_INTERVAL.total_seconds())
-        return max(MIN_SCAN_INTERVAL_SECONDS, int(number.total_seconds()))
-    return int(DEFAULT_SCAN_INTERVAL.total_seconds())
 
 
 @config_entries.HANDLERS.register(DOMAIN)
@@ -302,7 +264,11 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
         )
 
         self._auto_adjust_default = bool(auto_adjust_default)
-        self._scan_interval_default = _coerce_scan_interval_seconds(scan_interval_value)
+        self._scan_interval_default = coerce_scan_interval_seconds(
+            scan_interval_value,
+            DEFAULT_SCAN_INTERVAL,
+            MIN_SCAN_INTERVAL_SECONDS,
+        )
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
