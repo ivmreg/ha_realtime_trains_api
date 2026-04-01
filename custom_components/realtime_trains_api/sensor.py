@@ -507,9 +507,10 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             # We'll take the first reason for simplicity, usually it's the primary one
             train["reason"] = reasons[0].get("shortText")
 
-        found = False
+        found_dest = False
         found_start = False
         stopCount = -1
+        subsequent_stops = []
 
         for i, stop in enumerate(locations):
             stop_location = stop.get("location", {})
@@ -534,9 +535,9 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             if crs == self._journey_start:
                 found_start = True
 
-            if crs == self._journey_end and found_start:
+            if found_start and crs != self._journey_start:
                 display_as = temporal.get("displayAs") or ""
-                if display_as != 'ORIGIN':
+                if display_as in ["CALL", "DEST"]:
                     arr_data = temporal.get("arrival", {})
                     scheduled_arrival_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal")
                     estimated_arrival_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
@@ -549,25 +550,34 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                         else:
                             estimated_arrival = scheduled_arrival
 
-                        status = "OK"
-                        if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
-                            status = "Cancelled"
-                        elif estimated_arrival > scheduled_arrival:
-                            status = "Delayed"
+                        subsequent_stops.append({
+                            "stop": crs,
+                            "name": stop_location.get("description", ""),
+                            "scheduled": scheduled_arrival.strftime(STRFFORMAT),
+                            "estimated": estimated_arrival.strftime(STRFFORMAT),
+                        })
 
-                        newtrain = {
-                            "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
-                            "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
-                            "journey_time_mins": _delta_seconds(estimated_arrival, estimated_departure) // 60,
-                            "stops": stopCount,
-                            "status": status,
-                        }
-                        train.update(newtrain)
-                        found = True
+                        if crs == self._journey_end:
+                            status = "OK"
+                            if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
+                                status = "Cancelled"
+                            elif estimated_arrival > scheduled_arrival:
+                                status = "Delayed"
+
+                            train.update({
+                                "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
+                                "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
+                                "journey_time_mins": _delta_seconds(estimated_arrival, estimated_departure) // 60,
+                                "stops": stopCount,
+                                "status": status,
+                            })
+                            found_dest = True
             
             stopCount += 1
 
-        if self._journey_end and not found:
+        train["subsequent_stops"] = subsequent_stops
+
+        if self._journey_end and not found_dest:
             _LOGGER.warning(
                 "Could not find %s in stops for service %s.",
                 self._journey_end,
