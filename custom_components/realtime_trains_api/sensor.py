@@ -507,24 +507,19 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             # We'll take the first reason for simplicity, usually it's the primary one
             train["reason"] = reasons[0].get("shortText")
 
-        found_dest = False
-        found_start = False
-        stopCount = -1
-        subsequent_stops = []
-
+        last_report_idx = -1
+        # 1. First pass: find the last reported position
         for i, stop in enumerate(locations):
-            stop_location = stop.get("location", {})
-            crs = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
-            
             temporal = stop.get("temporalData", {})
             pass_act = temporal.get("pass", {}).get("realtimeActual")
             dep_act = temporal.get("departure", {}).get("realtimeActual")
             arr_act = temporal.get("arrival", {}).get("realtimeActual")
             
             if pass_act or dep_act or arr_act:
+                last_report_idx = i
                 last_report_time_str = pass_act or dep_act or arr_act
                 last_report_time = parse_rtt_datetime(last_report_time_str, TIMEZONE)
-                last_report_station = crs
+                last_report_station = stop.get("location", {}).get("shortCodes", [None])[0]
                 if pass_act:
                     last_report_type = "Pass"
                 elif dep_act:
@@ -532,46 +527,77 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 else:
                     last_report_type = "Arrival"
 
+        # Determine index from which to start subsequent_stops
+        # "all stops from the one that the train JUST departed (inclusive)"
+        just_departed_idx = 0
+        if last_report_idx != -1:
+            if last_report_type == "Arrival":
+                just_departed_idx = max(0, last_report_idx - 1)
+            else:
+                just_departed_idx = last_report_idx
+
+        found_dest = False
+        found_start = False
+        stopCount = -1
+        subsequent_stops = []
+
+        # 2. Second pass: collect data
+        for i, stop in enumerate(locations):
+            stop_location = stop.get("location", {})
+            crs = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
+            temporal = stop.get("temporalData", {})
+            display_as = temporal.get("displayAs") or ""
+
             if crs == self._journey_start:
                 found_start = True
 
-            if found_start and crs != self._journey_start:
-                display_as = temporal.get("displayAs") or ""
+            # Collect subsequent stops: from just_departed_idx to end
+            if i >= just_departed_idx:
                 if display_as in ["CALL", "DEST"]:
+                    # Get arrival data for the stop
                     arr_data = temporal.get("arrival", {})
-                    scheduled_arrival_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal")
-                    estimated_arrival_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
+                    # If it's the very first stop, we use departure data
+                    time_source = arr_data if arr_data else temporal.get("departure", {})
+                    
+                    scheduled_str = time_source.get("scheduleAdvertised") or time_source.get("scheduleInternal")
+                    estimated_str = time_source.get("realtimeActual") or time_source.get("realtimeForecast") or time_source.get("realtimeEstimate")
 
-                    if scheduled_arrival_str:
-                        scheduled_arrival = parse_rtt_datetime(scheduled_arrival_str, TIMEZONE)
-
-                        if estimated_arrival_str:
-                            estimated_arrival = parse_rtt_datetime(estimated_arrival_str, TIMEZONE)
-                        else:
-                            estimated_arrival = scheduled_arrival
+                    if scheduled_str:
+                        scheduled_dt = parse_rtt_datetime(scheduled_str, TIMEZONE)
+                        estimated_dt = parse_rtt_datetime(estimated_str, TIMEZONE) if estimated_str else scheduled_dt
 
                         subsequent_stops.append({
                             "stop": crs,
                             "name": stop_location.get("description", ""),
-                            "scheduled": scheduled_arrival.strftime(STRFFORMAT),
-                            "estimated": estimated_arrival.strftime(STRFFORMAT),
+                            "scheduled": scheduled_dt.strftime(STRFFORMAT),
+                            "estimated": estimated_dt.strftime(STRFFORMAT),
                         })
 
-                        if crs == self._journey_end:
-                            status = "OK"
-                            if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
-                                status = "Cancelled"
-                            elif estimated_arrival > scheduled_arrival:
-                                status = "Delayed"
+            # Handle destination filtering/info
+            if crs == self._journey_end and found_start:
+                if display_as != 'ORIGIN':
+                    arr_data = temporal.get("arrival", {})
+                    sch_arr_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal")
+                    est_arr_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
 
-                            train.update({
-                                "scheduled_arrival": scheduled_arrival.strftime(STRFFORMAT),
-                                "estimate_arrival": estimated_arrival.strftime(STRFFORMAT),
-                                "journey_time_mins": _delta_seconds(estimated_arrival, estimated_departure) // 60,
-                                "stops": stopCount,
-                                "status": status,
-                            })
-                            found_dest = True
+                    if sch_arr_str:
+                        sch_arr_dt = parse_rtt_datetime(sch_arr_str, TIMEZONE)
+                        est_arr_dt = parse_rtt_datetime(est_arr_str, TIMEZONE) if est_arr_str else sch_arr_dt
+
+                        status = "OK"
+                        if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
+                            status = "Cancelled"
+                        elif est_arr_dt > sch_arr_dt:
+                            status = "Delayed"
+
+                        train.update({
+                            "scheduled_arrival": sch_arr_dt.strftime(STRFFORMAT),
+                            "estimate_arrival": est_arr_dt.strftime(STRFFORMAT),
+                            "journey_time_mins": _delta_seconds(est_arr_dt, estimated_departure) // 60,
+                            "stops": stopCount,
+                            "status": status,
+                        })
+                        found_dest = True
             
             stopCount += 1
 

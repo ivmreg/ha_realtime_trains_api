@@ -1,0 +1,29 @@
+{
+    "name": "Home Assistant Dev Container",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "charliermarsh.ruff",
+                "keesschollaart.vscode-home-assistant"
+            ],
+            "settings": {
+                "python.analysis.extraPaths": [
+                    "${workspaceFolder}/custom_components"
+                ],
+                "python.testing.pytestEnabled": true,
+                "python.testing.pytestArgs": [
+                    "custom_components/realtime_trains_api/test"
+                ]
+            }
+        }
+    },
+    "remoteUser": "vscode",
+    "postCreateCommand": "pip3 install --user -r requirements.txt || true",
+    "forwardPorts": [8123]
+}
