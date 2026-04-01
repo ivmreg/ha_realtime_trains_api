@@ -34,6 +34,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
 )
 from .normalization import coerce_positive_int, coerce_scan_interval, coerce_time_offset, split_csv
+from .sensor_helpers import build_default_sensor_name, parse_rtt_datetime, retry_with_auth_refresh
 from .rtt_api import (
     RealtimeTrainsApiAuthError,
     RealtimeTrainsApiClient,
@@ -255,34 +256,12 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
     ) -> None:
         """Construct a live train time sensor."""
 
-        if journey_end:
-            if platforms_of_interest:
-                platform_str = ", ".join(sorted(platforms_of_interest))
-                default_sensor_name = (
-                    f"Next train from {journey_start} platform {platform_str} to {journey_end} ({timeoffset})" 
-                    if (timeoffset.total_seconds() > 0)
-                    else f"Next train from {journey_start} platform {platform_str} to {journey_end}"
-                )
-            else:
-                default_sensor_name = (
-                    f"Next train from {journey_start} to {journey_end} ({timeoffset})" 
-                    if (timeoffset.total_seconds() > 0)
-                    else f"Next train from {journey_start} to {journey_end}"
-                )
-        else:
-            if platforms_of_interest:
-                platform_str = ", ".join(sorted(platforms_of_interest))
-                default_sensor_name = (
-                    f"Trains from {journey_start} platform {platform_str} ({timeoffset})" 
-                    if (timeoffset.total_seconds() > 0)
-                    else f"Trains from {journey_start} platform {platform_str}"
-                )
-            else:
-                default_sensor_name = (
-                    f"Trains from {journey_start} ({timeoffset})" 
-                    if (timeoffset.total_seconds() > 0)
-                    else f"Trains from {journey_start}"
-                )
+        default_sensor_name = build_default_sensor_name(
+            journey_start,
+            journey_end,
+            timeoffset,
+            platforms_of_interest,
+        )
 
         self._journey_start = journey_start
         self._journey_end = journey_end
@@ -357,17 +336,13 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                 continue
 
             try:
-                scheduledTs = datetime.fromisoformat(scheduled_str)
-                if scheduledTs.tzinfo is None:
-                    scheduledTs = TIMEZONE.localize(scheduledTs)
+                scheduledTs = parse_rtt_datetime(scheduled_str, TIMEZONE)
             except ValueError:
                 continue
 
             if estimated_str:
                 try:
-                    estimatedTs = datetime.fromisoformat(estimated_str)
-                    if estimatedTs.tzinfo is None:
-                        estimatedTs = TIMEZONE.localize(estimatedTs)
+                    estimatedTs = parse_rtt_datetime(estimated_str, TIMEZONE)
                 except ValueError:
                     estimatedTs = scheduledTs
             else:
@@ -466,29 +441,25 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
     async def _load_departures(self, now: datetime):
         try:
-            _LOGGER.debug("Fetching location services for %s to %s at %s", self._journey_start, self._journey_end, now.strftime("%H%M"))
-            self._data = await self._api.fetch_location_services(
+            _LOGGER.debug(
+                "Fetching location services for %s to %s at %s",
                 self._journey_start,
                 self._journey_end,
-                now.date(),
-                now.strftime("%H%M")
+                now.strftime("%H%M"),
             )
-        except RealtimeTrainsApiAuthError:
-            if not await self._async_refresh_token():
-                self._state = "Credentials invalid"
-                self._data = {}
-                return
-            
-            # Retry
-            try:
-                self._data = await self._api.fetch_location_services(
+            data = await retry_with_auth_refresh(
+                lambda: self._api.fetch_location_services(
                     self._journey_start,
                     self._journey_end,
                     now.date(),
-                    now.strftime("%H%M")
-                )
-            except RealtimeTrainsApiError:
-                self._data = {}
+                    now.strftime("%H%M"),
+                ),
+                self._async_refresh_token,
+            )
+            self._data = data or {}
+        except RealtimeTrainsApiAuthError:
+            self._state = "Credentials invalid"
+            self._data = {}
         except RealtimeTrainsApiNotFoundError:
             self._data = {}
         except RealtimeTrainsApiError as err:
@@ -498,24 +469,17 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
     async def _add_journey_data(self, train, scheduled_departure, estimated_departure):
         """Populate journey data using service details."""
         try:
-            data = await self._api.fetch_service_details(
-                train['service_uid'],
-                scheduled_departure,
-            )
-        except RealtimeTrainsApiAuthError:
-            if not await self._async_refresh_token():
-                self._state = "Credentials invalid"
-                return
-            
-            # Retry
-            try:
-                data = await self._api.fetch_service_details(
+            data = await retry_with_auth_refresh(
+                lambda: self._api.fetch_service_details(
                     train['service_uid'],
                     scheduled_departure,
-                )
-            except RealtimeTrainsApiError as err:
-                _LOGGER.warning("Could not populate arrival times after retry: %s", err)
-                return
+                ),
+                self._async_refresh_token,
+                lambda err: _LOGGER.warning("Could not populate arrival times after retry: %s", err),
+            )
+        except RealtimeTrainsApiAuthError:
+            self._state = "Credentials invalid"
+            return
         except RealtimeTrainsApiNotFoundError:
             _LOGGER.warning(
                 "Could not find %s in stops for service %s.",
@@ -525,6 +489,9 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             return
         except RealtimeTrainsApiError as err:
             _LOGGER.warning("Could not populate arrival times: %s", err)
+            return
+
+        if data is None:
             return
 
         last_report_station = None
@@ -555,7 +522,7 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             
             if pass_act or dep_act or arr_act:
                 last_report_time_str = pass_act or dep_act or arr_act
-                last_report_time = datetime.fromisoformat(last_report_time_str)
+                last_report_time = parse_rtt_datetime(last_report_time_str, TIMEZONE)
                 last_report_station = crs
                 if pass_act:
                     last_report_type = "Pass"
@@ -575,14 +542,10 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
                     estimated_arrival_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
 
                     if scheduled_arrival_str:
-                        scheduled_arrival = datetime.fromisoformat(scheduled_arrival_str)
-                        if scheduled_arrival.tzinfo is None:
-                            scheduled_arrival = TIMEZONE.localize(scheduled_arrival)
+                        scheduled_arrival = parse_rtt_datetime(scheduled_arrival_str, TIMEZONE)
 
                         if estimated_arrival_str:
-                            estimated_arrival = datetime.fromisoformat(estimated_arrival_str)
-                            if estimated_arrival.tzinfo is None:
-                                estimated_arrival = TIMEZONE.localize(estimated_arrival)
+                            estimated_arrival = parse_rtt_datetime(estimated_arrival_str, TIMEZONE)
                         else:
                             estimated_arrival = scheduled_arrival
 
