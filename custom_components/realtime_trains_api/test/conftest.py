@@ -51,6 +51,7 @@ def _now():
 
 
 homeassistant = _install_module("homeassistant", package=True)
+exceptions = _install_module("homeassistant.exceptions")
 config_entries = _install_module("homeassistant.config_entries")
 core = _install_module("homeassistant.core")
 helpers = _install_module("homeassistant.helpers", package=True)
@@ -58,14 +59,18 @@ typing_mod = _install_module("homeassistant.helpers.typing")
 config_validation = _install_module("homeassistant.helpers.config_validation")
 aiohttp_client = _install_module("homeassistant.helpers.aiohttp_client")
 entity_platform = _install_module("homeassistant.helpers.entity_platform")
+update_coordinator = _install_module("homeassistant.helpers.update_coordinator")
+device_registry = _install_module("homeassistant.helpers.device_registry")
 components = _install_module("homeassistant.components", package=True)
 sensor = _install_module("homeassistant.components.sensor")
+diagnostics = _install_module("homeassistant.components.diagnostics")
 const = _install_module("homeassistant.const")
 data_entry_flow = _install_module("homeassistant.data_entry_flow")
 util = _install_module("homeassistant.util", package=True)
 util_dt = _install_module("homeassistant.util.dt")
 aiohttp = _install_module("aiohttp")
 
+homeassistant.exceptions = exceptions
 homeassistant.config_entries = config_entries
 homeassistant.core = core
 homeassistant.helpers = helpers
@@ -73,6 +78,14 @@ homeassistant.components = components
 homeassistant.const = const
 homeassistant.data_entry_flow = data_entry_flow
 homeassistant.util = util
+
+exceptions.ConfigEntryAuthFailed = type("ConfigEntryAuthFailed", (Exception,), {})
+update_coordinator.UpdateFailed = type("UpdateFailed", (Exception,), {})
+update_coordinator.DataUpdateCoordinator = type("DataUpdateCoordinator", (object,), {"__class_getitem__": classmethod(lambda cls, item: cls), "__init__": lambda self, *args, **kwargs: None})
+update_coordinator.CoordinatorEntity = type("CoordinatorEntity", (object,), {"__init__": lambda self, coordinator: None})
+device_registry.DeviceInfo = type("DeviceInfo", (dict,), {})
+device_registry.DeviceEntryType = type("DeviceEntryType", (object,), {"SERVICE": "service"})
+diagnostics.async_redact_data = MagicMock(name="async_redact_data", side_effect=lambda data, to_redact: {k: "**REDACTED**" if k in to_redact else v for k, v in data.items()} if data else data)
 
 config_entries.ConfigFlow = type("ConfigFlow", (object,), {})
 config_entries.OptionsFlow = type("OptionsFlow", (object,), {})
