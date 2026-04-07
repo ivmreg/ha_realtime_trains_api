@@ -79,9 +79,15 @@ homeassistant.const = const
 homeassistant.data_entry_flow = data_entry_flow
 homeassistant.util = util
 
+async def _fake_first_refresh(self): pass
+
 exceptions.ConfigEntryAuthFailed = type("ConfigEntryAuthFailed", (Exception,), {})
 update_coordinator.UpdateFailed = type("UpdateFailed", (Exception,), {})
-update_coordinator.DataUpdateCoordinator = type("DataUpdateCoordinator", (object,), {"__class_getitem__": classmethod(lambda cls, item: cls), "__init__": lambda self, *args, **kwargs: None})
+update_coordinator.DataUpdateCoordinator = type("DataUpdateCoordinator", (object,), {
+    "__class_getitem__": classmethod(lambda cls, item: cls),
+    "__init__": lambda self, *args, **kwargs: None,
+    "async_config_entry_first_refresh": _fake_first_refresh
+})
 update_coordinator.CoordinatorEntity = type("CoordinatorEntity", (object,), {"__init__": lambda self, coordinator: None})
 device_registry.DeviceInfo = type("DeviceInfo", (dict,), {})
 device_registry.DeviceEntryType = type("DeviceEntryType", (object,), {"SERVICE": "service"})

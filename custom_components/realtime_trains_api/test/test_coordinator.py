@@ -59,7 +59,20 @@ async def test_coordinator_fetches_and_structures_data():
     api = MagicMock()
     
     # Mock location services response
-    api.fetch_location_services = AsyncMock(return_value={"services": [{"scheduleMetadata": {"identity": "123", "inPassengerService": True}}]})
+    api.fetch_location_services = AsyncMock(return_value={
+        "services": [{
+            "scheduleMetadata": {
+                "identity": "123", 
+                "inPassengerService": True,
+                "departureDate": "2026-04-07"
+            },
+            "temporalData": {
+                "departure": {
+                    "scheduleAdvertised": "2026-04-07T12:05:00Z"
+                }
+            }
+        }]
+    })
     # Mock service details response
     api.fetch_service_details = AsyncMock(return_value={"service": {"locations": []}})
     
@@ -79,5 +92,5 @@ async def test_coordinator_fetches_and_structures_data():
         data = await coordinator._async_update_data()
         
     assert "WAL_WAT_all_0" in data
-    assert len(data["WAL_WAT_all_0"]["services"]) == 1
+    assert len(data["WAL_WAT_all_0"]["next_trains"]) == 1
     api.fetch_location_services.assert_called_once()
