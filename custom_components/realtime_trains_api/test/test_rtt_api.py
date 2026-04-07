@@ -18,10 +18,11 @@ from custom_components.realtime_trains_api.rtt_api import (
 class MockResponse:
     """Minimal async context manager to mimic aiohttp responses."""
 
-    def __init__(self, status: int, *, json_data: dict | None = None, text_data: str = "") -> None:
+    def __init__(self, status: int, *, json_data: dict | None = None, text_data: str = "", headers: dict | None = None) -> None:
         self.status = status
         self._json_data = json_data
         self._text_data = text_data
+        self.headers = headers or {}
 
     async def __aenter__(self) -> "MockResponse":
         return self
@@ -144,3 +145,23 @@ async def test_fetch_service_details_unexpected_status() -> None:
 
     assert "500" in str(err.value)
 
+
+@pytest.mark.asyncio
+async def test_request_rate_limit_parsing(sample_departures: dict) -> None:
+    session = MockSession()
+    url = f"{API_BASE}gb-nr/location?code=BKH&filterTo=CST"
+    headers = {
+        "X-RateLimit-Limit-Minute": "30",
+        "X-RateLimit-Remaining-Minute": "29",
+        "X-RateLimit-Limit-Hour": "750",
+        "X-RateLimit-Remaining-Hour": "740"
+    }
+    session.queue_response(url, MockResponse(200, json_data=sample_departures, headers=headers))
+    client = RealtimeTrainsApiClient(session, "token123")
+
+    await client.fetch_location_services("BKH", "CST")
+
+    assert client.rate_limits["minute"]["limit"] == 30
+    assert client.rate_limits["minute"]["remaining"] == 29
+    assert client.rate_limits["hour"]["limit"] == 750
+    assert client.rate_limits["hour"]["remaining"] == 740

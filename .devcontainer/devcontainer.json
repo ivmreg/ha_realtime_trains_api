@@ -4,6 +4,11 @@
         "dockerfile": "Dockerfile",
         "context": ".."
     },
+    "features": {
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "22"
+        }
+    },
     "customizations": {
         "vscode": {
             "extensions": [
@@ -24,6 +29,6 @@
         }
     },
     "remoteUser": "vscode",
-    "postCreateCommand": "pip3 install --user -r requirements.txt || true",
+    "postCreateCommand": "npm list -g @google/gemini-cli >/dev/null 2>&1 || npm install -g @google/gemini-cli; if [ -f requirements.txt ]; then pip3 install --user -r requirements.txt; fi",
     "forwardPorts": [8123]
 }

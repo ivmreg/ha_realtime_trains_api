@@ -47,6 +47,7 @@ from .rtt_api import (
     RealtimeTrainsApiClient,
     RealtimeTrainsApiError,
     RealtimeTrainsApiNotFoundError,
+    RealtimeTrainsApiRateLimitError,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -128,8 +129,8 @@ def _create_sensors(
     interval: timedelta,
     queries: list[Any],
     entry_id: str | None = None,
-) -> list[RealtimeTrainLiveTrainTimeSensor]:
-    sensors: list[RealtimeTrainLiveTrainTimeSensor] = []
+) -> list[SensorEntity]:
+    sensors: list[SensorEntity] = []
     seen_names: set[str] = set()
     seen_unique_ids: set[str] = set()
 
@@ -166,6 +167,9 @@ def _create_sensors(
         if sensor.unique_id:
             seen_unique_ids.add(sensor.unique_id)
         sensors.append(sensor)
+
+    # Add the rate limit sensor
+    sensors.append(RealtimeTrainRateLimitSensor(api_client, entry_id))
 
     return sensors
 
@@ -487,6 +491,10 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
         except RealtimeTrainsApiAuthError:
             self._state = "Credentials invalid"
             return
+        except RealtimeTrainsApiRateLimitError as err:
+            _LOGGER.debug("Rate limit hit or preemptively skipped for journey data: %s", err)
+            self._state = "Rate Limited"
+            return
         except RealtimeTrainsApiNotFoundError:
             _LOGGER.warning(
                 "Could not find %s in stops for service %s.",
@@ -593,3 +601,43 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 def _delta_seconds(hhmm_datetime_a : datetime, hhmm_datetime_b : datetime) -> float:
     """Calculate time delta in seconds between two datetime objects."""
     return (hhmm_datetime_a - hhmm_datetime_b).total_seconds()
+
+
+class RealtimeTrainRateLimitSensor(SensorEntity):
+    """Sensor that tracks Realtime Trains API rate limits."""
+
+    _attr_icon = "mdi:api"
+    _attr_name = "RTT API Rate Limit"
+    _attr_should_poll = True
+
+    def __init__(self, api_client: RealtimeTrainsApiClient, entry_id: str | None = None) -> None:
+        """Initialize the rate limit sensor."""
+        self._api = api_client
+        if entry_id:
+            self._attr_unique_id = f"{entry_id}_rate_limit"
+
+    @property
+    def native_value(self):
+        """Return the lowest remaining rate limit."""
+        lowest = None
+        for limits in self._api.rate_limits.values():
+            if limits["remaining"] is not None:
+                if lowest is None or limits["remaining"] < lowest:
+                    lowest = limits["remaining"]
+        return lowest
+
+    @property
+    def extra_state_attributes(self):
+        """Return rate limit attributes."""
+        attrs = {}
+        for dim, limits in self._api.rate_limits.items():
+            if limits["limit"] is not None:
+                attrs[f"{dim}_limit"] = limits["limit"]
+            if limits["remaining"] is not None:
+                attrs[f"{dim}_remaining"] = limits["remaining"]
+        return attrs
+
+    async def async_update(self):
+        """Update is handled passively when the API client makes requests."""
+        pass
+
