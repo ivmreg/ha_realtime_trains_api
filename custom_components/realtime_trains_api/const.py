@@ -19,3 +19,10 @@ CONF_TIMEOFFSET = "time_offset"
 CONF_PLATFORMS_OF_INTEREST = "platforms_of_interest"
 
 CRS_CODE_PATTERN = re.compile(r"^[A-Z]{3}$")
+
+CONF_PEAK_INTERVAL = "peak_interval"
+CONF_OFF_PEAK_INTERVAL = "off_peak_interval"
+CONF_PEAK_WINDOWS = "peak_windows"
+
+DEFAULT_PEAK_INTERVAL = 60
+DEFAULT_OFF_PEAK_INTERVAL = 300

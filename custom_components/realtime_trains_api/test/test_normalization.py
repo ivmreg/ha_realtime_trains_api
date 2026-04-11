@@ -44,3 +44,24 @@ def test_coerce_scan_interval_seconds_clamps_to_minimum() -> None:
 
     assert coerce_scan_interval_seconds(10, default, 30) == 30
     assert coerce_scan_interval_seconds({"seconds": 90}, default, 30) == 90
+
+from datetime import time
+import pytest
+from custom_components.realtime_trains_api.normalization import parse_time_windows
+
+def test_parse_time_windows_valid():
+    windows_str = "07:00-09:30, 16:30-19:00"
+    windows = parse_time_windows(windows_str)
+    assert len(windows) == 2
+    assert windows[0] == (time(7, 0), time(9, 30))
+    assert windows[1] == (time(16, 30), time(19, 0))
+
+def test_parse_time_windows_empty():
+    assert parse_time_windows("") == []
+    assert parse_time_windows("  ") == []
+
+def test_parse_time_windows_invalid():
+    with pytest.raises(ValueError):
+        parse_time_windows("07:00-09:30, invalid")
+    with pytest.raises(ValueError):
+        parse_time_windows("09:30-07:00") # end before start

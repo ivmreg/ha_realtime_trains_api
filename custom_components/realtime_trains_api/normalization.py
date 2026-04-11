@@ -87,3 +87,24 @@ def coerce_scan_interval_seconds(value: Any, default: timedelta, minimum_seconds
     """Coerce a value to integer scan interval seconds."""
     interval = coerce_scan_interval(value, default)
     return max(minimum_seconds, int(interval.total_seconds()))
+
+from datetime import datetime, time
+
+def parse_time_windows(windows_str: str) -> list[tuple[time, time]]:
+    """Parse a comma-separated string of time windows (e.g., '07:00-09:30, 16:30-19:00')."""
+    if not windows_str or not windows_str.strip():
+        return []
+    
+    windows = []
+    parts = [p.strip() for p in windows_str.split(",") if p.strip()]
+    for part in parts:
+        try:
+            start_str, end_str = part.split("-")
+            start_time = datetime.strptime(start_str.strip(), "%H:%M").time()
+            end_time = datetime.strptime(end_str.strip(), "%H:%M").time()
+            if end_time <= start_time:
+                raise ValueError(f"End time {end_time} must be after start time {start_time}")
+            windows.append((start_time, end_time))
+        except ValueError as err:
+            raise ValueError(f"Invalid time window format: {part}. Expected HH:MM-HH:MM") from err
+    return windows
