@@ -4,8 +4,6 @@ from datetime import timedelta
 DOMAIN = "realtime_trains_api"
 PLATFORMS = ["sensor"]
 
-DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
-
 CONF_API_TOKEN = "token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_QUERIES = "queries"
@@ -26,3 +24,4 @@ CONF_PEAK_WINDOWS = "peak_windows"
 
 DEFAULT_PEAK_INTERVAL = 60
 DEFAULT_OFF_PEAK_INTERVAL = 300
+DEFAULT_PEAK_WINDOWS = "07:00-09:30, 16:00-19:00"

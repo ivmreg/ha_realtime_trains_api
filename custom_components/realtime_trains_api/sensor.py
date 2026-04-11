@@ -32,14 +32,14 @@ from .const import (
     CONF_START,
     CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
-    DEFAULT_SCAN_INTERVAL,
     CONF_PEAK_INTERVAL,
     CONF_OFF_PEAK_INTERVAL,
     CONF_PEAK_WINDOWS,
     DEFAULT_PEAK_INTERVAL,
     DEFAULT_OFF_PEAK_INTERVAL,
+    DEFAULT_PEAK_WINDOWS,
 )
-from .normalization import coerce_positive_int, coerce_scan_interval, coerce_time_offset, split_csv, parse_time_windows
+from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
 from .sensor_helpers import (
     build_default_sensor_name,
 )
@@ -128,7 +128,7 @@ async def async_setup_platform(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Get the realtime_train sensor."""
-    interval = coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL), DEFAULT_SCAN_INTERVAL)
+    interval = timedelta(seconds=DEFAULT_PEAK_INTERVAL)
     token = config.get(RTT_CONF_API_TOKEN)
     refresh_token = config.get(RTT_CONF_REFRESH_TOKEN)
 
@@ -150,7 +150,7 @@ async def async_setup_platform(
         queries=queries,
         peak_interval=DEFAULT_PEAK_INTERVAL,
         off_peak_interval=DEFAULT_OFF_PEAK_INTERVAL,
-        peak_windows=[]
+        peak_windows=parse_time_windows(DEFAULT_PEAK_WINDOWS)
     )
     
     await coordinator.async_refresh()

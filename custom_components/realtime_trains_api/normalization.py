@@ -57,37 +57,6 @@ def coerce_time_offset(value: Any, default: timedelta) -> timedelta:
         return timedelta(minutes=max(0, minutes))
     return default
 
-
-def coerce_scan_interval(value: Any, default: timedelta) -> timedelta:
-    """Coerce a value to a scan interval timedelta."""
-    if isinstance(value, timedelta):
-        return value
-    if isinstance(value, dict):
-        try:
-            return timedelta(**{key: int(val) for key, val in value.items()})
-        except (TypeError, ValueError):
-            return default
-    if isinstance(value, (int, float)):
-        seconds = int(value)
-        if seconds <= 0:
-            return default
-        return timedelta(seconds=seconds)
-    if isinstance(value, str):
-        try:
-            seconds = int(float(value))
-        except (TypeError, ValueError):
-            return default
-        if seconds <= 0:
-            return default
-        return timedelta(seconds=seconds)
-    return default
-
-
-def coerce_scan_interval_seconds(value: Any, default: timedelta, minimum_seconds: int) -> int:
-    """Coerce a value to integer scan interval seconds."""
-    interval = coerce_scan_interval(value, default)
-    return max(minimum_seconds, int(interval.total_seconds()))
-
 from datetime import datetime, time
 
 def parse_time_windows(windows_str: str) -> list[tuple[time, time]]:

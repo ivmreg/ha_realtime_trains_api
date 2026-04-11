@@ -7,7 +7,6 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
@@ -26,13 +25,13 @@ from .const import (
     CONF_PEAK_WINDOWS,
     DEFAULT_PEAK_INTERVAL,
     DEFAULT_OFF_PEAK_INTERVAL,
+    DEFAULT_PEAK_WINDOWS,
     CONF_START,
     CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
-    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
-from .normalization import coerce_positive_int, coerce_scan_interval_seconds, coerce_time_offset, split_csv, parse_time_windows
+from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
 from .rtt_api import RealtimeTrainsApiClient, RealtimeTrainsApiAuthError
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,8 +40,6 @@ FIELD_ADD_ANOTHER = "add_another"
 FIELD_EDIT_QUERIES = "edit_queries"
 FIELD_PLATFORMS = "platforms_input"
 FIELD_TIME_OFFSET = "time_offset_minutes"
-MIN_SCAN_INTERVAL_SECONDS = 30
-MAX_SCAN_INTERVAL_SECONDS = 6 * 3600
 MAX_TIME_OFFSET_MINUTES = 12 * 60
 
 
@@ -50,14 +47,9 @@ def _user_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(RTT_CONF_REFRESH_TOKEN): cv.string,
-            vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,
-            vol.Optional(
-                CONF_SCAN_INTERVAL,
-                default=int(DEFAULT_SCAN_INTERVAL.total_seconds()),
-            ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL_SECONDS, max=MAX_SCAN_INTERVAL_SECONDS)),
-            vol.Optional(CONF_PEAK_INTERVAL, default=DEFAULT_PEAK_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+            vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,            vol.Optional(CONF_PEAK_INTERVAL, default=DEFAULT_PEAK_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
             vol.Optional(CONF_OFF_PEAK_INTERVAL, default=DEFAULT_OFF_PEAK_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
-            vol.Optional(CONF_PEAK_WINDOWS, default=""): cv.string,
+            vol.Optional(CONF_PEAK_WINDOWS, default=DEFAULT_PEAK_WINDOWS): cv.string,
         }
     )
 
@@ -172,7 +164,6 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
                     
                     user_input[RTT_CONF_API_TOKEN] = access_token
                     user_input[RTT_CONF_REFRESH_TOKEN] = refresh_token
-                    user_input[CONF_SCAN_INTERVAL] = int(user_input[CONF_SCAN_INTERVAL])
                     user_input[CONF_PEAK_INTERVAL] = int(user_input.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL))
                     user_input[CONF_OFF_PEAK_INTERVAL] = int(user_input.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL))
                     try:
@@ -270,23 +261,10 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_AUTOADJUSTSCANS,
             config_entry.data.get(CONF_AUTOADJUSTSCANS, False),
         )
-        scan_interval_value = config_entry.options.get(
-            CONF_SCAN_INTERVAL,
-            config_entry.data.get(
-                CONF_SCAN_INTERVAL,
-                int(DEFAULT_SCAN_INTERVAL.total_seconds()),
-            ),
-        )
-
         self._auto_adjust_default = bool(auto_adjust_default)
-        self._scan_interval_default = coerce_scan_interval_seconds(
-            scan_interval_value,
-            DEFAULT_SCAN_INTERVAL,
-            MIN_SCAN_INTERVAL_SECONDS,
-        )
         self._peak_interval_default = config_entry.options.get(CONF_PEAK_INTERVAL, config_entry.data.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL))
         self._off_peak_interval_default = config_entry.options.get(CONF_OFF_PEAK_INTERVAL, config_entry.data.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL))
-        self._peak_windows_default = config_entry.options.get(CONF_PEAK_WINDOWS, config_entry.data.get(CONF_PEAK_WINDOWS, ""))
+        self._peak_windows_default = config_entry.options.get(CONF_PEAK_WINDOWS, config_entry.data.get(CONF_PEAK_WINDOWS, DEFAULT_PEAK_WINDOWS))
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
@@ -303,7 +281,6 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
                 )
                 
             self._options[CONF_AUTOADJUSTSCANS] = bool(user_input.get(CONF_AUTOADJUSTSCANS, False))
-            self._options[CONF_SCAN_INTERVAL] = int(user_input[CONF_SCAN_INTERVAL])
             self._options[CONF_PEAK_INTERVAL] = int(user_input.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL))
             self._options[CONF_OFF_PEAK_INTERVAL] = int(user_input.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL))
             self._options[CONF_PEAK_WINDOWS] = user_input.get(CONF_PEAK_WINDOWS, "")
@@ -379,12 +356,7 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
 
     def _init_schema(self, force_edit: bool) -> vol.Schema:
         schema_dict: dict[Any, Any] = {
-            vol.Optional(CONF_AUTOADJUSTSCANS, default=self._auto_adjust_default): bool,
-            vol.Optional(
-                CONF_SCAN_INTERVAL,
-                default=self._scan_interval_default,
-            ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL_SECONDS, max=MAX_SCAN_INTERVAL_SECONDS)),
-            vol.Optional(CONF_PEAK_INTERVAL, default=self._peak_interval_default): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+            vol.Optional(CONF_AUTOADJUSTSCANS, default=self._auto_adjust_default): bool,            vol.Optional(CONF_PEAK_INTERVAL, default=self._peak_interval_default): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
             vol.Optional(CONF_OFF_PEAK_INTERVAL, default=self._off_peak_interval_default): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
             vol.Optional(CONF_PEAK_WINDOWS, default=self._peak_windows_default): cv.string,
         }

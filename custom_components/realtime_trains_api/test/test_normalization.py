@@ -2,8 +2,6 @@ from datetime import timedelta
 
 from custom_components.realtime_trains_api.normalization import (
     coerce_positive_int,
-    coerce_scan_interval,
-    coerce_scan_interval_seconds,
     coerce_time_offset,
     split_csv,
 )
@@ -29,21 +27,6 @@ def test_coerce_time_offset_handles_multiple_input_types() -> None:
     assert coerce_time_offset("20", default) == timedelta(minutes=20)
     assert coerce_time_offset("bad", default) == default
 
-
-def test_coerce_scan_interval_handles_multiple_input_types() -> None:
-    default = timedelta(minutes=1)
-
-    assert coerce_scan_interval(90, default) == timedelta(seconds=90)
-    assert coerce_scan_interval({"minutes": 2}, default) == timedelta(minutes=2)
-    assert coerce_scan_interval("120", default) == timedelta(seconds=120)
-    assert coerce_scan_interval("bad", default) == default
-
-
-def test_coerce_scan_interval_seconds_clamps_to_minimum() -> None:
-    default = timedelta(minutes=1)
-
-    assert coerce_scan_interval_seconds(10, default, 30) == 30
-    assert coerce_scan_interval_seconds({"seconds": 90}, default, 30) == 90
 
 from datetime import time
 import pytest

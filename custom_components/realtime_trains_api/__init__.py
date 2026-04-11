@@ -7,24 +7,23 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
 import logging
-from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     DOMAIN, 
     PLATFORMS, 
     CONF_QUERIES, 
-    DEFAULT_SCAN_INTERVAL, 
     CONF_API_TOKEN, 
     CONF_REFRESH_TOKEN, 
     CONF_PEAK_INTERVAL, 
     CONF_OFF_PEAK_INTERVAL, 
     CONF_PEAK_WINDOWS, 
     DEFAULT_PEAK_INTERVAL, 
-    DEFAULT_OFF_PEAK_INTERVAL
+    DEFAULT_OFF_PEAK_INTERVAL,
+    DEFAULT_PEAK_WINDOWS
 )
 from .rtt_api import RealtimeTrainsApiClient
 from .coordinator import RealtimeTrainsUpdateCoordinator
-from .normalization import coerce_scan_interval, parse_time_windows
+from .normalization import parse_time_windows
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -5,8 +5,7 @@
                 "data": {
                     "token": "Access Token",
                     "refresh_token": "Refresh Token",
-                    "auto_adjust_scans": "Auto adjust scan interval",
-                    "scan_interval": "Scan interval (seconds)"
+                    "auto_adjust_scans": "Auto adjust scan interval"
                 }
             },
             "query": {

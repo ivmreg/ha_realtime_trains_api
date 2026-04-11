@@ -122,7 +122,6 @@ sensor.PLATFORM_SCHEMA = MagicMock(name="PLATFORM_SCHEMA")
 sensor.SensorEntity = type("SensorEntity", (object,), {})
 
 const.UnitOfTime = types.SimpleNamespace(MINUTES="min")
-const.CONF_SCAN_INTERVAL = "scan_interval"
 
 data_entry_flow.FlowResult = dict
 

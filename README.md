@@ -85,8 +85,6 @@ This is useful for:
 sensor:
   - platform: realtime_trains_api
     token: '[Your RTT API Token]' # recommended to use '!secret my_rtt_token' and add to secrets.yaml
-    scan_interval:
-      seconds: 90 # this defaults to 60 seconds (in HA) so you can change this.  Dont set it too frequent or you might get blocked for abuse of the RTT API.
     auto_adjust_scans: true # If no depatures are retrieved, back off polling interval to 30 mins (until there are some trains)
     queries:
       - origin: WAL
