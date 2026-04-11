@@ -165,3 +165,31 @@ async def test_request_rate_limit_parsing(sample_departures: dict) -> None:
     assert client.rate_limits["minute"]["remaining"] == 29
     assert client.rate_limits["hour"]["limit"] == 750
     assert client.rate_limits["hour"]["remaining"] == 740
+
+@pytest.mark.asyncio
+async def test_rate_limit_deadlock(sample_departures: dict) -> None:
+    session = MockSession()
+    url = f"{API_BASE}gb-nr/location?code=BKH&filterTo=CST"
+    
+    # Simulate an API response leaving 2 requests remaining
+    headers_low_limit = {
+        "X-RateLimit-Limit-Minute": "30",
+        "X-RateLimit-Remaining-Minute": "2",
+    }
+    session.queue_response(url, MockResponse(200, json_data=sample_departures, headers=headers_low_limit))
+    client = RealtimeTrainsApiClient(session, "token123")
+
+    # Request 1 sets the internal limit counter to 2
+    await client.fetch_location_services("BKH", "CST")
+    assert client.rate_limits["minute"]["remaining"] == 2
+
+    # Provide a new response with reset limits
+    headers_reset = {
+        "X-RateLimit-Limit-Minute": "30",
+        "X-RateLimit-Remaining-Minute": "29",
+    }
+    session.queue_response(url, MockResponse(200, json_data=sample_departures, headers=headers_reset))
+    
+    # Request 2 should succeed and update limits, but will fail if preemptively blocked
+    await client.fetch_location_services("BKH", "CST")
+    assert client.rate_limits["minute"]["remaining"] == 29

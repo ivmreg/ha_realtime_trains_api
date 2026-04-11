@@ -140,10 +140,6 @@ class RealtimeTrainsApiClient:
                 retry_after=int(self._retry_after_timestamp - time.time())
             )
             
-        for dim, limits in self.rate_limits.items():
-            if limits["remaining"] is not None and limits["remaining"] <= 2:
-                _LOGGER.warning("Preemptive backoff: API %s limit remaining is %s", dim, limits["remaining"])
-                raise RealtimeTrainsApiRateLimitError(f"Preemptive backoff: {dim} limit is critically low")
 
         # Create headers copy for logging (mask Authorization)
         log_headers = {k: (v if k.lower() != "authorization" else "Bearer ***") for k, v in self._headers.items()}
