@@ -16,10 +16,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.util import Throttle
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 import homeassistant.util.dt as dt_util
 
 from .const import (
+    DOMAIN,
     CONF_API_TOKEN as RTT_CONF_API_TOKEN,
     CONF_REFRESH_TOKEN as RTT_CONF_REFRESH_TOKEN,
     CONF_AUTOADJUSTSCANS,
@@ -32,23 +33,18 @@ from .const import (
     CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
     DEFAULT_SCAN_INTERVAL,
+    CONF_PEAK_INTERVAL,
+    CONF_OFF_PEAK_INTERVAL,
+    CONF_PEAK_WINDOWS,
+    DEFAULT_PEAK_INTERVAL,
+    DEFAULT_OFF_PEAK_INTERVAL,
 )
-from .normalization import coerce_positive_int, coerce_scan_interval, coerce_time_offset, split_csv
+from .normalization import coerce_positive_int, coerce_scan_interval, coerce_time_offset, split_csv, parse_time_windows
 from .sensor_helpers import (
     build_default_sensor_name,
-    collect_subsequent_stops,
-    find_last_report,
-    parse_rtt_datetime,
-    retry_with_auth_refresh,
-    subsequent_stop_start_index,
 )
-from .rtt_api import (
-    RealtimeTrainsApiAuthError,
-    RealtimeTrainsApiClient,
-    RealtimeTrainsApiError,
-    RealtimeTrainsApiNotFoundError,
-    RealtimeTrainsApiRateLimitError,
-)
+from .rtt_api import RealtimeTrainsApiClient
+from .coordinator import RealtimeTrainsUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,6 +57,8 @@ ATTR_JOURNEY_START = "journey_start"
 ATTR_JOURNEY_END = "journey_end"
 ATTR_NEXT_TRAINS = "next_trains"
 ATTR_PLATFORMS_OF_INTEREST = "platforms_of_interest"
+ATTR_CURRENT_POLLING_INTERVAL = "current_polling_interval"
+ATTR_NEXT_UPDATE_AT = "next_update_at"
 
 TIMEZONE = pytz.timezone('Europe/London')
 STRFFORMAT = "%d-%m-%Y %H:%M"
@@ -123,16 +121,42 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
     }
 
 
-def _create_sensors(
-    api_client: RealtimeTrainsApiClient,
-    autoadjustscans: bool,
-    interval: timedelta,
-    queries: list[Any],
-    entry_id: str | None = None,
-) -> list[SensorEntity]:
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
+    """Get the realtime_train sensor."""
+    interval = coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL), DEFAULT_SCAN_INTERVAL)
+    token = config.get(RTT_CONF_API_TOKEN)
+    refresh_token = config.get(RTT_CONF_REFRESH_TOKEN)
+
+    if not token and not refresh_token:
+        _LOGGER.error("Realtime Trains API entry is missing credentials.")
+        return
+
+    queries = config[CONF_QUERIES]
+
+    client = async_get_clientsession(hass)
+    api_client = RealtimeTrainsApiClient(client, token, refresh_token)
+    
+    coordinator = RealtimeTrainsUpdateCoordinator(
+        hass=hass,
+        logger=_LOGGER,
+        name="RTT YAML",
+        update_interval=interval,
+        api=api_client,
+        queries=queries,
+        peak_interval=DEFAULT_PEAK_INTERVAL,
+        off_peak_interval=DEFAULT_OFF_PEAK_INTERVAL,
+        peak_windows=[]
+    )
+    
+    await coordinator.async_refresh()
+
     sensors: list[SensorEntity] = []
     seen_names: set[str] = set()
-    seen_unique_ids: set[str] = set()
 
     for idx, raw_query in enumerate(queries or []):
         try:
@@ -140,18 +164,89 @@ def _create_sensors(
         except ValueError as err:
             _LOGGER.warning("Skipping RTT query configuration: %s", err)
             continue
+            
+        origin = query[CONF_START]
+        destination = query[CONF_END]
+        platforms = query[CONF_PLATFORMS_OF_INTEREST]
+        time_offset = query[CONF_TIMEOFFSET]
+        
+        platforms_str = "_".join(sorted(platforms)) if platforms else "all"
+        dest_str = destination if destination else "all"
+        offset_str = f"{int(time_offset.total_seconds())}" if time_offset.total_seconds() > 0 else "0"
+        query_key = f"{origin}_{dest_str}_{platforms_str}_{offset_str}"
 
         sensor = RealtimeTrainLiveTrainTimeSensor(
+            coordinator,
             query.get(CONF_SENSORNAME),
-            api_client,
-            query[CONF_START],
-            query[CONF_END],
-            query[CONF_JOURNEYDATA],
-            query[CONF_TIMEOFFSET],
-            autoadjustscans,
-            query[CONF_PLATFORMS_OF_INTEREST],
-            interval,
-            entry_id,
+            query_key,
+            origin,
+            destination,
+            time_offset,
+            platforms,
+            None,
+            idx,
+        )
+
+        if sensor.name in seen_names:
+            _LOGGER.warning("Duplicate sensor name '%s' - skipping duplicate entry", sensor.name)
+            continue
+
+        seen_names.add(sensor.name)
+        sensors.append(sensor)
+
+    sensors.append(RealtimeTrainRateLimitSensor(coordinator, None))
+
+    if sensors:
+        async_add_entities(sensors, True)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up sensors from a config entry."""
+    coordinator = hass.data[DOMAIN].get(entry.entry_id)
+    if not coordinator:
+        _LOGGER.error("Coordinator not found for entry %s", entry.entry_id)
+        return
+
+    queries = entry.options.get(CONF_QUERIES) or entry.data.get(CONF_QUERIES, [])
+
+    if not queries:
+        _LOGGER.warning("Realtime Trains API entry %s has no queries configured", entry.entry_id)
+        return
+
+    sensors: list[SensorEntity] = []
+    seen_names: set[str] = set()
+    seen_unique_ids: set[str] = set()
+
+    for idx, raw_query in enumerate(queries):
+        try:
+            query = _normalize_query(raw_query)
+        except ValueError as err:
+            _LOGGER.warning("Skipping RTT query configuration: %s", err)
+            continue
+
+        origin = query[CONF_START]
+        destination = query[CONF_END]
+        platforms = query[CONF_PLATFORMS_OF_INTEREST]
+        time_offset = query[CONF_TIMEOFFSET]
+        
+        platforms_str = "_".join(sorted(platforms)) if platforms else "all"
+        dest_str = destination if destination else "all"
+        offset_str = f"{int(time_offset.total_seconds())}" if time_offset.total_seconds() > 0 else "0"
+        query_key = f"{origin}_{dest_str}_{platforms_str}_{offset_str}"
+
+        sensor = RealtimeTrainLiveTrainTimeSensor(
+            coordinator,
+            query.get(CONF_SENSORNAME),
+            query_key,
+            origin,
+            destination,
+            time_offset,
+            platforms,
+            entry.entry_id,
             idx,
         )
 
@@ -168,68 +263,7 @@ def _create_sensors(
             seen_unique_ids.add(sensor.unique_id)
         sensors.append(sensor)
 
-    # Add the rate limit sensor
-    sensors.append(RealtimeTrainRateLimitSensor(api_client, entry_id))
-
-    return sensors
-
-
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> None:
-    """Get the realtime_train sensor."""
-    interval = coerce_scan_interval(config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL), DEFAULT_SCAN_INTERVAL)
-    autoadjustscans = config[CONF_AUTOADJUSTSCANS]
-    token = config.get(RTT_CONF_API_TOKEN)
-    refresh_token = config.get(RTT_CONF_REFRESH_TOKEN)
-
-    if not token and not refresh_token:
-        _LOGGER.error("Realtime Trains API entry is missing credentials.")
-        return
-
-    queries = config[CONF_QUERIES]
-
-
-    client = async_get_clientsession(hass)
-    api_client = RealtimeTrainsApiClient(client, token, refresh_token)
-
-    sensors = _create_sensors(api_client, autoadjustscans, interval, queries)
-
-    if sensors:
-        async_add_entities(sensors, True)
-
-
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up sensors from a config entry."""
-    token = entry.data.get(RTT_CONF_API_TOKEN)
-    refresh_token = entry.data.get(RTT_CONF_REFRESH_TOKEN)
-
-    if not token and not refresh_token:
-        _LOGGER.error("Realtime Trains API entry %s is missing credentials", entry.entry_id)
-        return
-
-    interval = coerce_scan_interval(
-        entry.options.get(CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)),
-        DEFAULT_SCAN_INTERVAL,
-    )
-    autoadjustscans = entry.options.get(CONF_AUTOADJUSTSCANS, entry.data.get(CONF_AUTOADJUSTSCANS, False))
-    queries = entry.options.get(CONF_QUERIES) or entry.data.get(CONF_QUERIES, [])
-
-    if not queries:
-        _LOGGER.warning("Realtime Trains API entry %s has no queries configured", entry.entry_id)
-        return
-
-    client = async_get_clientsession(hass)
-    api_client = RealtimeTrainsApiClient(client, token, refresh_token)
-
-    sensors = _create_sensors(api_client, autoadjustscans, interval, queries, entry.entry_id)
+    sensors.append(RealtimeTrainRateLimitSensor(coordinator, entry.entry_id))
 
     if sensors:
         async_add_entities(sensors, True)
@@ -239,13 +273,9 @@ async def async_setup_entry(
         )
 
 
-class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
+class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
     """
-    Sensor that reads the rtt API.
-
-    api.rtt.io provides free comprehensive train data for UK trains
-    across the UK via simple JSON API. Subclasses of this
-    base class can be used to access specific types of information.
+    Sensor that reads the rtt API via coordinator.
     """
 
     _attr_icon = "mdi:train"
@@ -253,19 +283,18 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
 
     def __init__(
         self,
+        coordinator: RealtimeTrainsUpdateCoordinator,
         sensor_name: str | None,
-        api_client: RealtimeTrainsApiClient,
+        query_key: str,
         journey_start: str,
         journey_end: str | None,
-        journey_data_for_next_X_trains: int,
         timeoffset: timedelta,
-        autoadjustscans: bool,
         platforms_of_interest: list[str],
-        interval: timedelta,
         entry_id: str | None = None,
         query_index: int = 0,
     ) -> None:
         """Construct a live train time sensor."""
+        super().__init__(coordinator)
 
         default_sensor_name = build_default_sensor_name(
             journey_start,
@@ -274,353 +303,88 @@ class RealtimeTrainLiveTrainTimeSensor(SensorEntity):
             platforms_of_interest,
         )
 
+        self._query_key = query_key
         self._journey_start = journey_start
         self._journey_end = journey_end
-        self._journey_data_for_next_X_trains = journey_data_for_next_X_trains
-        self._next_trains = []
-        self._data = {}
-        self._api = api_client
         self._timeoffset = timeoffset
-        self._autoadjustscans = autoadjustscans
         self._platforms_of_interest = {
             platform.strip()
             for platform in platforms_of_interest
             if isinstance(platform, str) and platform.strip()
         }
-        self._interval = interval
         self._entry_id = entry_id
 
-        self._name = default_sensor_name if sensor_name is None else sensor_name
-        self._state = None
+        self._attr_name = default_sensor_name if sensor_name is None else sensor_name
         
-        # Generate a stable unique_id for config entry sensors
         if entry_id:
-            # Create unique ID based on entry_id, origin, destination, platforms, and time offset
-            platforms_str = "_".join(sorted(platforms_of_interest)) if platforms_of_interest else "all"
+            platforms_str = "_".join(sorted(self._platforms_of_interest)) if self._platforms_of_interest else "all"
             dest_str = journey_end if journey_end else "all"
             offset_str = f"{int(timeoffset.total_seconds())}" if timeoffset.total_seconds() > 0 else "0"
             self._attr_unique_id = f"{entry_id}_{journey_start}_{dest_str}_{platforms_str}_{offset_str}_{query_index}"
         else:
             self._attr_unique_id = None
 
-        self.async_update = self._async_update
-
-    async def _async_update(self):
-        """Get the latest live departure data for the specified stop."""
-        _LOGGER.debug("Updating Realtime Trains sensor: %s", self._name)
-        now = cast(datetime, dt_util.now()).astimezone(TIMEZONE)
-        await self._load_departures(now)
-        self._next_trains = []
-        departureCount = 0
-        
-        nextDepartureEstimatedTs : (datetime | None) = None
-
-        services = self._data.get("services") if isinstance(self._data, dict) else None
-        departures = services or []
-        _LOGGER.debug("Found %d services for %s", len(departures), self._journey_start)
-
-        for departure in departures:
-            schedule_metadata = departure.get("scheduleMetadata", {})
-            if not schedule_metadata.get("inPassengerService", False):
-                continue
-
-            loc_metadata = departure.get("locationMetadata", {})
-            platform_dict = loc_metadata.get("platform", {})
-            # Use actual platform if available, else planned
-            platform = platform_dict.get("actual") or platform_dict.get("planned")
-            platform_key = platform.strip() if isinstance(platform, str) else platform
-            if self._platforms_of_interest and platform_key not in self._platforms_of_interest:
-                continue
-
-            departuredate_str = schedule_metadata.get("departureDate")
-            if not departuredate_str:
-                continue
-
-            # temporalData handles datetimes as ISO strings
-            temporal_data = departure.get("temporalData", {}).get("departure", {})
-
-            scheduled_str = temporal_data.get("scheduleAdvertised") or temporal_data.get("scheduleInternal")
-
-            estimated_str = temporal_data.get("realtimeActual") or temporal_data.get("realtimeForecast") or temporal_data.get("realtimeEstimate")
-
-            if not scheduled_str:
-                continue
-
-            try:
-                scheduledTs = parse_rtt_datetime(scheduled_str, TIMEZONE)
-            except ValueError:
-                continue
-
-            if estimated_str:
-                try:
-                    estimatedTs = parse_rtt_datetime(estimated_str, TIMEZONE)
-                except ValueError:
-                    estimatedTs = scheduledTs
-            else:
-                estimatedTs = scheduledTs
-
-            if _delta_seconds(estimatedTs, now) < self._timeoffset.total_seconds():
-                continue
-
-            if nextDepartureEstimatedTs is None:
-                nextDepartureEstimatedTs = estimatedTs
-            else:
-                nextDepartureEstimatedTs = min(nextDepartureEstimatedTs, estimatedTs)
-
-            departureCount += 1
-
-            # Get origin/destination
-            origins = departure.get("origin", [])
-            origin_name = origins[0].get("location", {}).get("description", "") if origins else ""
-
-            destinations = departure.get("destination", [])
-            destination_name = destinations[0].get("location", {}).get("description", "") if destinations else ""
-
-            service_uid = schedule_metadata.get("identity")
-            headcode = schedule_metadata.get("trainReportingIdentity")
-            mode_type = schedule_metadata.get("modeType")
-            operator_name = schedule_metadata.get("operator", {}).get("name", "")
-            
-            length = loc_metadata.get("numberOfVehicles")
-            stock = loc_metadata.get("stockBranding")
-            
-            lateness = temporal_data.get("realtimeAdvertisedLateness")
-            is_cancelled = temporal_data.get("isCancelled", False)
-
-            train = {
-                    "origin_name": origin_name,
-                    "destination_name": destination_name,
-                    "service_uid": service_uid,
-                    "headcode": headcode,
-                    "type": mode_type,
-                    "operator_name": operator_name,
-                    "scheduled": scheduledTs.strftime(STRFFORMAT),
-                    "estimated": estimatedTs.strftime(STRFFORMAT),
-                    "minutes": _delta_seconds(estimatedTs, now) // 60,
-                    "lateness": lateness,
-                    "is_cancelled": is_cancelled,
-                    "platform": platform,
-                    "length": length,
-                    "stock": stock,
-                }
-            if departureCount > self._journey_data_for_next_X_trains:
-                break;
-            
-            await self._add_journey_data(train, scheduledTs, estimatedTs)
-            self._next_trains.append(train)
-
-        if nextDepartureEstimatedTs is None:
-            self._state = None
-        else:
-            self._state = _delta_seconds(nextDepartureEstimatedTs, now) // 60
-
-        if self._autoadjustscans:
-            if nextDepartureEstimatedTs is None:
-                self.async_update = Throttle(timedelta(minutes=30))(self._async_update)
-            else:
-                self.async_update = self._async_update
-
-    async def _async_refresh_token(self) -> bool:
-        """Refresh the access token."""
-        try:
-            await self._api.async_get_access_token()
-            if self._entry_id:
-                entry = self.hass.config_entries.async_get_entry(self._entry_id)
-                if entry:
-                    new_data = dict(entry.data)
-                    new_data[RTT_CONF_API_TOKEN] = self._api.token
-                    self.hass.config_entries.async_update_entry(entry, data=new_data)
-            return True
-        except RealtimeTrainsApiAuthError as err:
-            _LOGGER.error("Failed to refresh RTT access token: %s", err)
-            return False
-
-    @property
-    def unique_id(self):
-        """Return the unique ID of the sensor."""
-        return self._attr_unique_id
-
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
     @property
     def native_value(self):
         """Return the state of the sensor."""
-        return self._state
-
-    async def _load_departures(self, now: datetime):
-        try:
-            _LOGGER.debug(
-                "Fetching location services for %s to %s at %s",
-                self._journey_start,
-                self._journey_end,
-                now.strftime("%H%M"),
-            )
-            data = await retry_with_auth_refresh(
-                lambda: self._api.fetch_location_services(
-                    self._journey_start,
-                    self._journey_end,
-                    now.date(),
-                    now.strftime("%H%M"),
-                ),
-                self._async_refresh_token,
-            )
-            self._data = data or {}
-        except RealtimeTrainsApiAuthError:
-            self._state = "Credentials invalid"
-            self._data = {}
-        except RealtimeTrainsApiNotFoundError:
-            self._data = {}
-        except RealtimeTrainsApiError as err:
-            _LOGGER.warning("Invalid response from API: %s", err)
-            self._data = {}
-
-    async def _add_journey_data(self, train, scheduled_departure, estimated_departure):
-        """Populate journey data using service details."""
-        try:
-            data = await retry_with_auth_refresh(
-                lambda: self._api.fetch_service_details(
-                    train['service_uid'],
-                    scheduled_departure,
-                ),
-                self._async_refresh_token,
-                lambda err: _LOGGER.warning("Could not populate arrival times after retry: %s", err),
-            )
-        except RealtimeTrainsApiAuthError:
-            self._state = "Credentials invalid"
-            return
-        except RealtimeTrainsApiRateLimitError as err:
-            _LOGGER.debug("Rate limit hit or preemptively skipped for journey data: %s", err)
-            self._state = "Rate Limited"
-            return
-        except RealtimeTrainsApiNotFoundError:
-            _LOGGER.warning(
-                "Could not find %s in stops for service %s.",
-                self._journey_end,
-                train['service_uid'],
-            )
-            return
-        except RealtimeTrainsApiError as err:
-            _LOGGER.warning("Could not populate arrival times: %s", err)
-            return
-
-        if data is None:
-            return
-
-        service = data.get("service", {})
-        locations = service.get("locations", [])
-
-        # Extract reasons if available
-        reasons = service.get("reasons", [])
-        if reasons:
-            # We'll take the first reason for simplicity, usually it's the primary one
-            train["reason"] = reasons[0].get("shortText")
-
-        last_report_idx, last_report_type, last_report_station, last_report_time = find_last_report(
-            locations,
-            TIMEZONE,
-        )
-        just_departed_idx = subsequent_stop_start_index(last_report_idx, last_report_type)
-
-        found_dest = False
-        found_start = False
-        stopCount = -1
-        subsequent_stops = collect_subsequent_stops(locations, just_departed_idx, TIMEZONE)
-
-        # Second pass: populate destination summary and stop counts.
-        for i, stop in enumerate(locations):
-            stop_location = stop.get("location", {})
-            crs = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
-            temporal = stop.get("temporalData", {})
-            display_as = temporal.get("displayAs") or ""
-
-            if crs == self._journey_start:
-                found_start = True
-
-            # Handle destination filtering/info
-            if crs == self._journey_end and found_start:
-                if display_as != 'ORIGIN':
-                    arr_data = temporal.get("arrival", {})
-                    sch_arr_str = arr_data.get("scheduleAdvertised") or arr_data.get("scheduleInternal")
-                    est_arr_str = arr_data.get("realtimeActual") or arr_data.get("realtimeForecast") or arr_data.get("realtimeEstimate")
-
-                    if sch_arr_str:
-                        sch_arr_dt = parse_rtt_datetime(sch_arr_str, TIMEZONE)
-                        est_arr_dt = parse_rtt_datetime(est_arr_str, TIMEZONE) if est_arr_str else sch_arr_dt
-
-                        status = "OK"
-                        if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
-                            status = "Cancelled"
-                        elif est_arr_dt > sch_arr_dt:
-                            status = "Delayed"
-
-                        train.update({
-                            "scheduled_arrival": sch_arr_dt.strftime(STRFFORMAT),
-                            "estimate_arrival": est_arr_dt.strftime(STRFFORMAT),
-                            "journey_time_mins": _delta_seconds(est_arr_dt, estimated_departure) // 60,
-                            "stops": stopCount,
-                            "status": status,
-                        })
-                        found_dest = True
-            
-            stopCount += 1
-
-        train["subsequent_stops"] = subsequent_stops
-
-        if self._journey_end and not found_dest:
-            _LOGGER.warning(
-                "Could not find %s in stops for service %s.",
-                self._journey_end,
-                train['service_uid'],
-            )
-
-        if not self._journey_end:
-            train["stops"] = stopCount
-
-        if last_report_station is not None:
-            train["last_report_station"] = last_report_station
-            train["last_report_type"] = last_report_type
-            train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
+        if not self.coordinator.data or self._query_key not in self.coordinator.data:
+            return None
+        return self.coordinator.data[self._query_key].get("state")
 
     @property
     def extra_state_attributes(self):
         """Return other details about the sensor state."""
         attrs = {}
-        if self._data is not None:
-            attrs[ATTR_JOURNEY_START] = self._journey_start
-            if self._journey_end:
-                attrs[ATTR_JOURNEY_END] = self._journey_end
-            if self._platforms_of_interest:
-                attrs[ATTR_PLATFORMS_OF_INTEREST] = sorted(self._platforms_of_interest)
-            if self._next_trains:
-                attrs[ATTR_NEXT_TRAINS] = self._next_trains
-            return attrs
+        
+        if self.coordinator.data and self._query_key in self.coordinator.data:
+            data = self.coordinator.data[self._query_key]
+            attrs[ATTR_JOURNEY_START] = data.get("journey_start")
+            if data.get("journey_end"):
+                attrs[ATTR_JOURNEY_END] = data.get("journey_end")
+                
+            next_trains = data.get("next_trains", [])
+            if next_trains:
+                attrs[ATTR_NEXT_TRAINS] = next_trains
+                
+            if data.get("platforms_of_interest"):
+                attrs[ATTR_PLATFORMS_OF_INTEREST] = list(data["platforms_of_interest"])
+                
+        attrs[ATTR_CURRENT_POLLING_INTERVAL] = self.coordinator.current_polling_interval
+        if getattr(self.coordinator, "last_update_time", None):
+            next_update = self.coordinator.last_update_time + self.coordinator.update_interval
+            attrs[ATTR_NEXT_UPDATE_AT] = next_update.isoformat()
+            
+        return attrs
 
-def _delta_seconds(hhmm_datetime_a : datetime, hhmm_datetime_b : datetime) -> float:
-    """Calculate time delta in seconds between two datetime objects."""
-    return (hhmm_datetime_a - hhmm_datetime_b).total_seconds()
 
+class RealtimeTrainRateLimitSensor(CoordinatorEntity, SensorEntity):
+    """Sensor tracking API rate limits via coordinator."""
 
-class RealtimeTrainRateLimitSensor(SensorEntity):
-    """Sensor that tracks Realtime Trains API rate limits."""
+    _attr_icon = "mdi:speedometer"
+    _attr_native_unit_of_measurement = "requests"
 
-    _attr_icon = "mdi:api"
-    _attr_name = "RTT API Rate Limit"
-    _attr_should_poll = True
-
-    def __init__(self, api_client: RealtimeTrainsApiClient, entry_id: str | None = None) -> None:
+    def __init__(
+        self,
+        coordinator: RealtimeTrainsUpdateCoordinator,
+        entry_id: str | None = None,
+    ) -> None:
         """Initialize the rate limit sensor."""
-        self._api = api_client
+        super().__init__(coordinator)
+        self._entry_id = entry_id
+        
+        base_name = "Realtime Trains Rate Limit"
+        self._attr_name = base_name
+        
         if entry_id:
             self._attr_unique_id = f"{entry_id}_rate_limit"
+        else:
+            self._attr_unique_id = None
 
     @property
     def native_value(self):
         """Return the lowest remaining rate limit."""
         lowest = None
-        for limits in self._api.rate_limits.values():
+        for limits in self.coordinator.api.rate_limits.values():
             if limits["remaining"] is not None:
                 if lowest is None or limits["remaining"] < lowest:
                     lowest = limits["remaining"]
@@ -630,14 +394,16 @@ class RealtimeTrainRateLimitSensor(SensorEntity):
     def extra_state_attributes(self):
         """Return rate limit attributes."""
         attrs = {}
-        for dim, limits in self._api.rate_limits.items():
+        for dim, limits in self.coordinator.api.rate_limits.items():
             if limits["limit"] is not None:
                 attrs[f"{dim}_limit"] = limits["limit"]
             if limits["remaining"] is not None:
                 attrs[f"{dim}_remaining"] = limits["remaining"]
+                
+        # Also include polling interval in rate limit sensor for convenience
+        attrs[ATTR_CURRENT_POLLING_INTERVAL] = self.coordinator.current_polling_interval
+        if getattr(self.coordinator, "last_update_time", None):
+            next_update = self.coordinator.last_update_time + self.coordinator.update_interval
+            attrs[ATTR_NEXT_UPDATE_AT] = next_update.isoformat()
+            
         return attrs
-
-    async def async_update(self):
-        """Update is handled passively when the API client makes requests."""
-        pass
-

@@ -42,6 +42,9 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         update_interval: timedelta,
         api: RealtimeTrainsApiClient,
         queries: list[dict[str, Any]],
+        peak_interval: int = 60,
+        off_peak_interval: int = 300,
+        peak_windows: list = None,
     ) -> None:
         """Initialize."""
         super().__init__(
@@ -52,6 +55,11 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.api = api
         self.queries = queries
+        self.peak_interval = peak_interval
+        self.off_peak_interval = off_peak_interval
+        self.peak_windows = peak_windows or []
+        self.current_polling_interval = None
+        self.last_update_time = None
 
     async def _async_refresh_token(self) -> bool:
         """Refresh the access token."""
@@ -159,6 +167,24 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API endpoint."""
         now = cast(datetime, dt_util.now()).astimezone(TIMEZONE)
+        
+        is_peak = False
+        if not self.peak_windows:
+            is_peak = True
+        else:
+            current_time = now.time()
+            for start_time, end_time in self.peak_windows:
+                if start_time <= current_time <= end_time:
+                    is_peak = True
+                    break
+        
+        target_interval = self.peak_interval if is_peak else self.off_peak_interval
+        if self.current_polling_interval != target_interval:
+            self.current_polling_interval = target_interval
+            self.update_interval = timedelta(seconds=target_interval)
+            _LOGGER.debug("Adjusted polling interval to %s seconds", target_interval)
+            
+        self.last_update_time = now
         result_data = {}
 
         try:

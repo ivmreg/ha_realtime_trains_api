@@ -94,3 +94,41 @@ async def test_coordinator_fetches_and_structures_data():
     assert "WAL_WAT_all_0" in data
     assert len(data["WAL_WAT_all_0"]["next_trains"]) == 1
     api.fetch_location_services.assert_called_once()
+
+from datetime import timedelta, datetime, time
+from unittest.mock import patch, MagicMock
+import pytest
+import pytz
+from custom_components.realtime_trains_api.coordinator import TIMEZONE
+
+@pytest.mark.asyncio
+async def test_coordinator_dynamic_interval():
+    hass = MagicMock()
+    logger = MagicMock()
+    from unittest.mock import AsyncMock
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={"services": []})
+    
+    # We import here to get the patched class
+    from custom_components.realtime_trains_api.coordinator import RealtimeTrainsUpdateCoordinator
+    
+    coordinator = RealtimeTrainsUpdateCoordinator(
+        hass, logger, "test", timedelta(seconds=60), api, [{}]
+    )
+    coordinator.peak_interval = 60
+    coordinator.off_peak_interval = 300
+    coordinator.peak_windows = [(time(7, 0), time(9, 30))]
+    
+    # Test during peak
+    mock_now_peak = datetime(2026, 4, 11, 8, 0, tzinfo=TIMEZONE)
+    with patch("custom_components.realtime_trains_api.coordinator.dt_util.now", return_value=mock_now_peak):
+        await coordinator._async_update_data()
+        assert getattr(coordinator, "update_interval", None) == timedelta(seconds=60)
+        assert coordinator.current_polling_interval == 60
+        
+    # Test during off-peak
+    mock_now_off_peak = datetime(2026, 4, 11, 10, 0, tzinfo=TIMEZONE)
+    with patch("custom_components.realtime_trains_api.coordinator.dt_util.now", return_value=mock_now_off_peak):
+        await coordinator._async_update_data()
+        assert getattr(coordinator, "update_interval", None) == timedelta(seconds=300)
+        assert coordinator.current_polling_interval == 300
