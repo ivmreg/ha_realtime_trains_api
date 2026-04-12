@@ -16,6 +16,7 @@ from .sensor_helpers import (
     subsequent_stop_start_index,
     collect_subsequent_stops,
 )
+from .normalization import coerce_time_offset
 from .rtt_api import (
     RealtimeTrainsApiAuthError,
     RealtimeTrainsApiClient,
@@ -192,7 +193,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 origin = query.get(CONF_START)
                 destination = query.get(CONF_END)
                 platforms = query.get(CONF_PLATFORMS_OF_INTEREST, [])
-                time_offset = query.get(CONF_TIMEOFFSET, timedelta())
+                time_offset = coerce_time_offset(query.get(CONF_TIMEOFFSET, timedelta()), timedelta())
                 journey_data_count = query.get(CONF_JOURNEYDATA, 0)
                 
                 if isinstance(platforms, str):
