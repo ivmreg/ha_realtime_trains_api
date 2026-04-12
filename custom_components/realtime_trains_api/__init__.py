@@ -41,10 +41,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 	token = entry.data.get(CONF_API_TOKEN)
 	refresh_token = entry.data.get(CONF_REFRESH_TOKEN)
 
-	queries = entry.options.get(CONF_QUERIES) or entry.data.get(CONF_QUERIES, [])
-	peak_interval = entry.options.get(CONF_PEAK_INTERVAL) or entry.data.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL)
-	off_peak_interval = entry.options.get(CONF_OFF_PEAK_INTERVAL) or entry.data.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL)
-	peak_windows_str = entry.options.get(CONF_PEAK_WINDOWS) or entry.data.get(CONF_PEAK_WINDOWS, DEFAULT_PEAK_WINDOWS)
+	queries = entry.options.get(CONF_QUERIES, entry.data.get(CONF_QUERIES, []))
+	peak_interval = entry.options.get(CONF_PEAK_INTERVAL, entry.data.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL))
+	off_peak_interval = entry.options.get(CONF_OFF_PEAK_INTERVAL, entry.data.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL))
+	peak_windows_str = entry.options.get(CONF_PEAK_WINDOWS, entry.data.get(CONF_PEAK_WINDOWS, DEFAULT_PEAK_WINDOWS))
 
 	client = async_get_clientsession(hass)
 	api_client = RealtimeTrainsApiClient(client, token, refresh_token)
