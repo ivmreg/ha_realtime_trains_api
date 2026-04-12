@@ -5,11 +5,31 @@ from custom_components.realtime_trains_api import (
     async_setup_entry,
     async_unload_entry,
 )
-from custom_components.realtime_trains_api.const import DOMAIN, PLATFORMS, CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL, CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL, CONF_PEAK_WINDOWS, DEFAULT_PEAK_WINDOWS
+from custom_components.realtime_trains_api.const import (
+    DOMAIN,
+    PLATFORMS,
+    CONF_API_TOKEN,
+    CONF_REFRESH_TOKEN,
+    CONF_QUERIES,
+    CONF_START,
+    CONF_END,
+    CONF_PEAK_INTERVAL,
+    DEFAULT_PEAK_INTERVAL,
+    CONF_OFF_PEAK_INTERVAL,
+    DEFAULT_OFF_PEAK_INTERVAL,
+    CONF_PEAK_WINDOWS,
+    DEFAULT_PEAK_WINDOWS,
+)
+from custom_components.realtime_trains_api.coordinator import RealtimeTrainsUpdateCoordinator
 
 @pytest.fixture
 def mock_config_entry_data(config_entry):
     config_entry.data = {
+        CONF_API_TOKEN: "test_api_token",
+        CONF_REFRESH_TOKEN: "test_refresh_token",
+        CONF_QUERIES: [
+            {CONF_START: "PAD", CONF_END: "RDG"},
+        ],
         CONF_PEAK_INTERVAL: DEFAULT_PEAK_INTERVAL,
         CONF_OFF_PEAK_INTERVAL: DEFAULT_OFF_PEAK_INTERVAL,
         CONF_PEAK_WINDOWS: DEFAULT_PEAK_WINDOWS,
@@ -31,6 +51,10 @@ async def test_async_setup_entry(hass, mock_config_entry_data):
     result = await async_setup_entry(hass, mock_config_entry_data)
     assert result is True
     assert mock_config_entry_data.entry_id in hass.data[DOMAIN]
+    coordinator = hass.data[DOMAIN][mock_config_entry_data.entry_id]
+    assert isinstance(coordinator, RealtimeTrainsUpdateCoordinator)
+    assert coordinator.api is not None
+    assert coordinator.queries == mock_config_entry_data.data[CONF_QUERIES]
     assert hass.config_entries.async_forward_entry_setups.called
     assert hass.config_entries.async_forward_entry_setups.call_args[0][1] == PLATFORMS
 
