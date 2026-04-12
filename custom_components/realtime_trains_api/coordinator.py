@@ -30,7 +30,9 @@ TIMEZONE = pytz.timezone('Europe/London')
 STRFFORMAT = "%d-%m-%Y %H:%M"
 
 def _delta_seconds(hhmm_datetime_a: datetime, hhmm_datetime_b: datetime) -> float:
-    return (hhmm_datetime_a - hhmm_datetime_b).total_seconds()
+    a_trunc = hhmm_datetime_a.replace(second=0, microsecond=0)
+    b_trunc = hhmm_datetime_b.replace(second=0, microsecond=0)
+    return (a_trunc - b_trunc).total_seconds()
 
 class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Class to manage fetching Realtime Trains data."""
