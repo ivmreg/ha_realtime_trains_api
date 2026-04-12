@@ -4,5 +4,6 @@
     "country": [
         "GB"
     ],
-    "homeassistant": "2021.9.0"
+    "homeassistant": "2021.9.0",
+    "issue_tracker": "https://github.com/ivmreg/ha_realtime_trains_api/issues"
 }
