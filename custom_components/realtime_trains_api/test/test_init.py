@@ -5,7 +5,37 @@ from custom_components.realtime_trains_api import (
     async_setup_entry,
     async_unload_entry,
 )
-from custom_components.realtime_trains_api.const import DOMAIN, PLATFORMS
+from custom_components.realtime_trains_api.const import (
+    DOMAIN,
+    PLATFORMS,
+    CONF_API_TOKEN,
+    CONF_REFRESH_TOKEN,
+    CONF_QUERIES,
+    CONF_START,
+    CONF_END,
+    CONF_PEAK_INTERVAL,
+    DEFAULT_PEAK_INTERVAL,
+    CONF_OFF_PEAK_INTERVAL,
+    DEFAULT_OFF_PEAK_INTERVAL,
+    CONF_PEAK_WINDOWS,
+    DEFAULT_PEAK_WINDOWS,
+)
+from custom_components.realtime_trains_api.coordinator import RealtimeTrainsUpdateCoordinator
+
+@pytest.fixture
+def mock_config_entry_data(config_entry):
+    config_entry.data = {
+        CONF_API_TOKEN: "test_api_token",
+        CONF_REFRESH_TOKEN: "test_refresh_token",
+        CONF_QUERIES: [
+            {CONF_START: "PAD", CONF_END: "RDG"},
+        ],
+        CONF_PEAK_INTERVAL: DEFAULT_PEAK_INTERVAL,
+        CONF_OFF_PEAK_INTERVAL: DEFAULT_OFF_PEAK_INTERVAL,
+        CONF_PEAK_WINDOWS: DEFAULT_PEAK_WINDOWS,
+    }
+    config_entry.options = {}
+    return config_entry
 
 @pytest.mark.asyncio
 async def test_async_setup(hass):
@@ -16,40 +46,44 @@ async def test_async_setup(hass):
     assert DOMAIN in hass.data
 
 @pytest.mark.asyncio
-async def test_async_setup_entry(hass, config_entry):
+async def test_async_setup_entry(hass, mock_config_entry_data):
     """Test setting up a config entry."""
-    result = await async_setup_entry(hass, config_entry)
+    result = await async_setup_entry(hass, mock_config_entry_data)
     assert result is True
-    assert config_entry.entry_id in hass.data[DOMAIN]
+    assert mock_config_entry_data.entry_id in hass.data[DOMAIN]
+    coordinator = hass.data[DOMAIN][mock_config_entry_data.entry_id]
+    assert isinstance(coordinator, RealtimeTrainsUpdateCoordinator)
+    assert coordinator.api is not None
+    assert coordinator.queries == mock_config_entry_data.data[CONF_QUERIES]
     assert hass.config_entries.async_forward_entry_setups.called
     assert hass.config_entries.async_forward_entry_setups.call_args[0][1] == PLATFORMS
 
 @pytest.mark.asyncio
-async def test_async_unload_entry(hass, config_entry):
+async def test_async_unload_entry(hass, mock_config_entry_data):
     """Test unloading a config entry."""
     # Setup first
-    await async_setup_entry(hass, config_entry)
-    assert config_entry.entry_id in hass.data[DOMAIN]
+    await async_setup_entry(hass, mock_config_entry_data)
+    assert mock_config_entry_data.entry_id in hass.data[DOMAIN]
 
     # Mock unload success
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=True)
 
-    result = await async_unload_entry(hass, config_entry)
+    result = await async_unload_entry(hass, mock_config_entry_data)
     assert result is True
-    assert config_entry.entry_id not in hass.data[DOMAIN]
+    assert mock_config_entry_data.entry_id not in hass.data[DOMAIN]
     assert hass.config_entries.async_unload_platforms.called
     assert hass.config_entries.async_unload_platforms.call_args[0][1] == PLATFORMS
 
 @pytest.mark.asyncio
-async def test_async_unload_entry_fails(hass, config_entry):
+async def test_async_unload_entry_fails(hass, mock_config_entry_data):
     """Test unloading a config entry when it fails."""
     # Setup first
-    await async_setup_entry(hass, config_entry)
-    assert config_entry.entry_id in hass.data[DOMAIN]
+    await async_setup_entry(hass, mock_config_entry_data)
+    assert mock_config_entry_data.entry_id in hass.data[DOMAIN]
 
     # Mock unload failure
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
 
-    result = await async_unload_entry(hass, config_entry)
+    result = await async_unload_entry(hass, mock_config_entry_data)
     assert result is False
-    assert config_entry.entry_id in hass.data[DOMAIN]
+    assert mock_config_entry_data.entry_id in hass.data[DOMAIN]
