@@ -1,7 +1,8 @@
 {
     "name": "Realtime Trains API",
     "render_readme": true,
-    "domains": ["sensor"],
-    "country": ["GB"],
+    "country": [
+        "GB"
+    ],
     "homeassistant": "2021.9.0"
 }
