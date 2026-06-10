@@ -30,6 +30,8 @@ from .const import (
     CONF_TIMEOFFSET,
     CRS_CODE_PATTERN,
     DOMAIN,
+    CONF_LOOKBACK,
+    DEFAULT_LOOKBACK_MINUTES,
 )
 from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
 from .rtt_api import RealtimeTrainsApiClient, RealtimeTrainsApiAuthError
@@ -68,6 +70,9 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 vol.Coerce(int), vol.Range(min=0, max=MAX_TIME_OFFSET_MINUTES)
             ),
             vol.Optional(FIELD_PLATFORMS, default=defaults.get(FIELD_PLATFORMS, "")): cv.string,
+            vol.Optional(CONF_LOOKBACK, default=defaults.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES)): vol.All(
+                vol.Coerce(int), vol.Range(min=0, max=1440)
+            ),
             vol.Optional(FIELD_ADD_ANOTHER, default=False): bool,
         }
     )
@@ -97,6 +102,7 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
     journey_data = coerce_positive_int(user_input.get(CONF_JOURNEYDATA, 0))
     time_offset = coerce_positive_int(user_input.get(FIELD_TIME_OFFSET, 0))
     platforms = split_csv(user_input.get(FIELD_PLATFORMS, ""))
+    lookback = coerce_positive_int(user_input.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES))
 
     add_another = bool(user_input.get(FIELD_ADD_ANOTHER))
 
@@ -107,6 +113,7 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
         CONF_JOURNEYDATA: journey_data,
         CONF_TIMEOFFSET: time_offset,
         CONF_PLATFORMS_OF_INTEREST: platforms,
+        CONF_LOOKBACK: lookback,
     }
 
     return query, add_another, errors
@@ -125,6 +132,7 @@ def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
         CONF_JOURNEYDATA: raw_query.get(CONF_JOURNEYDATA, 0),
         FIELD_TIME_OFFSET: minutes,
         FIELD_PLATFORMS: ", ".join(platforms),
+        CONF_LOOKBACK: raw_query.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES),
         FIELD_ADD_ANOTHER: False,
     }
 
@@ -205,6 +213,7 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
                     CONF_JOURNEYDATA: query.get(CONF_JOURNEYDATA, 0),
                     FIELD_TIME_OFFSET: query.get(CONF_TIMEOFFSET, 0),
                     FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
+                    CONF_LOOKBACK: user_input.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES),
                     FIELD_ADD_ANOTHER: add_another,
                 }
             else:
@@ -317,6 +326,7 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_JOURNEYDATA: user_input.get(CONF_JOURNEYDATA, 0),
                     FIELD_TIME_OFFSET: user_input.get(FIELD_TIME_OFFSET, 0),
                     FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
+                    CONF_LOOKBACK: user_input.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES),
                     FIELD_ADD_ANOTHER: add_another,
                 }
                 return self._show_query_form(defaults, errors)

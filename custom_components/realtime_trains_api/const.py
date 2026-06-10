@@ -15,6 +15,7 @@ CONF_JOURNEYDATA = "journey_data_for_next_X_trains"
 CONF_SENSORNAME = "sensor_name"
 CONF_TIMEOFFSET = "time_offset"
 CONF_PLATFORMS_OF_INTEREST = "platforms_of_interest"
+CONF_LOOKBACK = "lookback_minutes"
 
 CRS_CODE_PATTERN = re.compile(r"^[A-Z]{3}$")
 
@@ -25,3 +26,4 @@ CONF_PEAK_WINDOWS = "peak_windows"
 DEFAULT_PEAK_INTERVAL = 60
 DEFAULT_OFF_PEAK_INTERVAL = 300
 DEFAULT_PEAK_WINDOWS = "07:00-09:30, 16:00-19:00"
+DEFAULT_LOOKBACK_MINUTES = 60

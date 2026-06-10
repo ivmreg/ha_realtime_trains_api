@@ -136,6 +136,28 @@ async def test_retry_with_auth_refresh_reports_retry_failure() -> None:
     assert isinstance(retry_errors[0], RealtimeTrainsApiError)
 
 
+async def test_retry_with_auth_refresh_reraises_auth_error_on_retry() -> None:
+    """Auth errors after a successful refresh+retry must propagate, not be swallowed."""
+    async def refresh() -> bool:
+        return True
+
+    attempts = 0
+
+    async def fetch() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise RealtimeTrainsApiAuthError("still bad")
+
+    try:
+        await retry_with_auth_refresh(fetch, refresh)
+    except RealtimeTrainsApiAuthError:
+        pass
+    else:
+        raise AssertionError("Expected RealtimeTrainsApiAuthError to be re-raised")
+
+    assert attempts == 2
+
+
 def test_find_last_report_returns_latest_actual_report() -> None:
     locations = [
         {

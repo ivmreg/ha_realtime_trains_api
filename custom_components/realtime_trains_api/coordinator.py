@@ -8,7 +8,15 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_START, CONF_END, CONF_JOURNEYDATA, CONF_TIMEOFFSET, CONF_PLATFORMS_OF_INTEREST
+from .const import (
+    CONF_START,
+    CONF_END,
+    CONF_JOURNEYDATA,
+    CONF_TIMEOFFSET,
+    CONF_PLATFORMS_OF_INTEREST,
+    CONF_LOOKBACK,
+    DEFAULT_LOOKBACK_MINUTES,
+)
 from .sensor_helpers import (
     retry_with_auth_refresh,
     parse_rtt_datetime,
@@ -28,7 +36,6 @@ from .rtt_api import (
 _LOGGER = logging.getLogger(__name__)
 TIMEZONE = pytz.timezone('Europe/London')
 STRFFORMAT = "%d-%m-%Y %H:%M"
-LOOKBACK_MINUTES = 60
 
 def _delta_seconds(hhmm_datetime_a: datetime, hhmm_datetime_b: datetime) -> float:
     a_trunc = hhmm_datetime_a.replace(second=0, microsecond=0)
@@ -171,7 +178,6 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API endpoint."""
         now = cast(datetime, dt_util.now()).astimezone(TIMEZONE)
-        query_dt = now - timedelta(minutes=LOOKBACK_MINUTES)
         
         is_peak = False
         if not self.peak_windows:
@@ -199,6 +205,8 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 platforms = query.get(CONF_PLATFORMS_OF_INTEREST, [])
                 time_offset = coerce_time_offset(query.get(CONF_TIMEOFFSET, timedelta()), timedelta())
                 journey_data_count = query.get(CONF_JOURNEYDATA, 0)
+                lookback_mins = query.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES)
+                query_dt = now - timedelta(minutes=lookback_mins)
                 
                 if isinstance(platforms, str):
                     platforms = [p.strip() for p in platforms.split(',') if p.strip()]

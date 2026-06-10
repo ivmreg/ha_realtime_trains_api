@@ -16,6 +16,7 @@
                     "journey_data_for_next_X_trains": "Number of future trains to include",
                     "time_offset_minutes": "Time offset (minutes)",
                     "platforms_input": "Platforms of interest (comma separated)",
+                    "lookback_minutes": "Lookback window (minutes)",
                     "add_another": "Add another query"
                 },
                 "description": "Currently added: {added}"

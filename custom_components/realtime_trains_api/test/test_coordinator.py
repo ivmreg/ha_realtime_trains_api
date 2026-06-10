@@ -100,6 +100,33 @@ async def test_coordinator_fetches_and_structures_data():
         "1200",
     )
 
+@pytest.mark.asyncio
+async def test_coordinator_custom_lookback():
+    hass = MagicMock()
+    api = MagicMock()
+    
+    api.fetch_location_services = AsyncMock(return_value={"services": []})
+    api.async_get_access_token = AsyncMock(return_value="new_token")
+    
+    coordinator = RealtimeTrainsUpdateCoordinator(
+        hass=hass,
+        logger=MagicMock(),
+        name="test",
+        update_interval=timedelta(minutes=1),
+        api=api,
+        queries=[{"origin": "WAL", "destination": "WAT", "lookback_minutes": 30, "platforms_of_interest": [], "time_offset": timedelta()}]
+    )
+    
+    with freeze_time("2026-04-07 12:00:00"):
+        await coordinator._async_update_data()
+        
+    api.fetch_location_services.assert_called_once_with(
+        "WAL",
+        "WAT",
+        date(2026, 4, 7),
+        "1230",
+    )
+
 from datetime import timedelta, datetime, time
 from unittest.mock import patch, MagicMock
 import pytest

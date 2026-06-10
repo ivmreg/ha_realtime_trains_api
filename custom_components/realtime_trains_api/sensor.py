@@ -38,6 +38,8 @@ from .const import (
     DEFAULT_PEAK_INTERVAL,
     DEFAULT_OFF_PEAK_INTERVAL,
     DEFAULT_PEAK_WINDOWS,
+    CONF_LOOKBACK,
+    DEFAULT_LOOKBACK_MINUTES,
 )
 from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
 from .sensor_helpers import (
@@ -72,6 +74,7 @@ _QUERY_SCHEME = vol.Schema(
         vol.Optional(CONF_TIMEOFFSET, default=DEFAULT_TIMEOFFSET):
             vol.All(cv.time_period, cv.positive_timedelta),
         vol.Optional(CONF_PLATFORMS_OF_INTEREST): [cv.string],
+        vol.Optional(CONF_LOOKBACK, default=DEFAULT_LOOKBACK_MINUTES): cv.positive_int,
     }
 )
 
@@ -110,6 +113,7 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
     journey_data = coerce_positive_int(raw_query.get(CONF_JOURNEYDATA, 0))
     time_offset = coerce_time_offset(raw_query.get(CONF_TIMEOFFSET, DEFAULT_TIMEOFFSET), DEFAULT_TIMEOFFSET)
     platforms = split_csv(raw_query.get(CONF_PLATFORMS_OF_INTEREST, []))
+    lookback = coerce_positive_int(raw_query.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES))
 
     return {
         CONF_SENSORNAME: sensor_name,
@@ -118,6 +122,7 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
         CONF_JOURNEYDATA: journey_data,
         CONF_TIMEOFFSET: time_offset,
         CONF_PLATFORMS_OF_INTEREST: platforms,
+        CONF_LOOKBACK: lookback,
     }
 
 

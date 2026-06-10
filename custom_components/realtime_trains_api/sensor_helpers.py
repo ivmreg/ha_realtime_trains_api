@@ -166,6 +166,8 @@ async def retry_with_auth_refresh(
 
         try:
             return await fetch()
+        except RealtimeTrainsApiAuthError:
+            raise
         except RealtimeTrainsApiError as err:
             if on_retry_error is not None:
                 on_retry_error(err)
