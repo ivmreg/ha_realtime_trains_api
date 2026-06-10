@@ -28,6 +28,7 @@ from .rtt_api import (
 _LOGGER = logging.getLogger(__name__)
 TIMEZONE = pytz.timezone('Europe/London')
 STRFFORMAT = "%d-%m-%Y %H:%M"
+LOOKBACK_MINUTES = 60
 
 def _delta_seconds(hhmm_datetime_a: datetime, hhmm_datetime_b: datetime) -> float:
     a_trunc = hhmm_datetime_a.replace(second=0, microsecond=0)
@@ -170,6 +171,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API endpoint."""
         now = cast(datetime, dt_util.now()).astimezone(TIMEZONE)
+        query_dt = now - timedelta(minutes=LOOKBACK_MINUTES)
         
         is_peak = False
         if not self.peak_windows:
@@ -218,8 +220,8 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     lambda: self.api.fetch_location_services(
                         origin,
                         destination,
-                        now.date(),
-                        now.strftime("%H%M"),
+                        query_dt.date(),
+                        query_dt.strftime("%H%M"),
                     ),
                     self._async_refresh_token,
                 )

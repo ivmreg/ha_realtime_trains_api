@@ -51,7 +51,7 @@ async def test_coordinator_rate_limit_error():
         await coordinator._async_update_data()
 
 from freezegun import freeze_time
-from datetime import datetime
+from datetime import datetime, date
 
 @pytest.mark.asyncio
 async def test_coordinator_fetches_and_structures_data():
@@ -93,7 +93,12 @@ async def test_coordinator_fetches_and_structures_data():
         
     assert "WAL_WAT_all_0" in data
     assert len(data["WAL_WAT_all_0"]["next_trains"]) == 1
-    api.fetch_location_services.assert_called_once()
+    api.fetch_location_services.assert_called_once_with(
+        "WAL",
+        "WAT",
+        date(2026, 4, 7),
+        "1200",
+    )
 
 from datetime import timedelta, datetime, time
 from unittest.mock import patch, MagicMock
