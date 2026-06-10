@@ -230,6 +230,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         destination,
                         query_dt.date(),
                         query_dt.strftime("%H%M"),
+                        time_window=lookback_mins + 120,
                     ),
                     self._async_refresh_token,
                 )

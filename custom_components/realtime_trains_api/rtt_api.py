@@ -94,6 +94,7 @@ class RealtimeTrainsApiClient:
         to_station: str | None = None,
         query_date: date | None = None,
         time: str | int | None = None,
+        time_window: int | None = None,
     ) -> dict[str, Any]:
         """Fetch departures or arrivals for a location."""
         params = [f"code={station}"]
@@ -114,6 +115,9 @@ class RealtimeTrainsApiClient:
                 params.append(f"timeFrom={query_date.isoformat()}T00:00:00")
         elif time:
             raise ValueError("time can only be provided when query_date is set")
+
+        if time_window:
+            params.append(f"timeWindow={time_window}")
 
         path = "gb-nr/location?" + "&".join(params)
         return await self._request(path)

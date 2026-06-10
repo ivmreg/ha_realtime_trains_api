@@ -98,6 +98,7 @@ async def test_coordinator_fetches_and_structures_data():
         "WAT",
         date(2026, 4, 7),
         "1200",
+        time_window=180,
     )
 
 @pytest.mark.asyncio
@@ -125,6 +126,7 @@ async def test_coordinator_custom_lookback():
         "WAT",
         date(2026, 4, 7),
         "1230",
+        time_window=150,
     )
 
 from datetime import timedelta, datetime, time
