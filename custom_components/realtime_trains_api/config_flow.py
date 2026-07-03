@@ -42,7 +42,6 @@ from .rtt_api import RealtimeTrainsApiClient, RealtimeTrainsApiAuthError
 _LOGGER = logging.getLogger(__name__)
 
 FIELD_ADD_ANOTHER = "add_another"
-FIELD_EDIT_QUERIES = "edit_queries"
 FIELD_PLATFORMS = "platforms_input"
 FIELD_TIME_OFFSET = "time_offset_minutes"
 MAX_TIME_OFFSET_MINUTES = 12 * 60
@@ -60,10 +59,12 @@ def _user_schema() -> vol.Schema:
     )
 
 
-def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+def _query_schema(
+    defaults: dict[str, Any] | None = None,
+    include_add_another: bool = True,
+) -> vol.Schema:
     defaults = defaults or {}
-    return vol.Schema(
-        {
+    schema: dict[Any, Any] = {
             vol.Optional(CONF_SENSORNAME, default=defaults.get(CONF_SENSORNAME, "")): cv.string,
             vol.Required(CONF_START, default=defaults.get(CONF_START, "")): cv.string,
             vol.Optional(CONF_END, default=defaults.get(CONF_END, "")): cv.string,
@@ -81,9 +82,10 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 vol.Coerce(int), vol.Range(min=0, max=1440)
             ),
             vol.Optional(CONF_PINNED_DEPARTURE, default=defaults.get(CONF_PINNED_DEPARTURE, "")): cv.string,
-            vol.Optional(FIELD_ADD_ANOTHER, default=False): bool,
-        }
-    )
+    }
+    if include_add_another:
+        schema[vol.Optional(FIELD_ADD_ANOTHER, default=False)] = bool
+    return vol.Schema(schema)
 
 
 def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bool, dict[str, str]]:
@@ -319,128 +321,146 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
 
 
 class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
-    """Allow users to adjust existing Realtime Trains API configuration."""
+    """Menu-based editing of an existing Realtime Trains API configuration."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._queries: list[dict[str, Any]] = []
-        self._options: dict[str, Any] = {}
-
         if CONF_QUERIES in config_entry.options:
-            existing_queries = list(config_entry.options.get(CONF_QUERIES) or [])
+            queries = list(config_entry.options.get(CONF_QUERIES) or [])
         else:
-            existing_queries = list(config_entry.data.get(CONF_QUERIES, []))
-        self._existing_queries_raw = list(existing_queries)
-        self._query_defaults = [_query_form_defaults(query) for query in existing_queries]
+            queries = list(config_entry.data.get(CONF_QUERIES, []))
+        # Working copies; nothing is persisted until the save step.
+        self._queries: list[dict[str, Any]] = queries
+        self._settings: dict[str, Any] = {
+            CONF_AUTOADJUSTSCANS: bool(
+                config_entry.options.get(
+                    CONF_AUTOADJUSTSCANS,
+                    config_entry.data.get(CONF_AUTOADJUSTSCANS, False),
+                )
+            ),
+            CONF_PEAK_INTERVAL: config_entry.options.get(
+                CONF_PEAK_INTERVAL,
+                config_entry.data.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL),
+            ),
+            CONF_OFF_PEAK_INTERVAL: config_entry.options.get(
+                CONF_OFF_PEAK_INTERVAL,
+                config_entry.data.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL),
+            ),
+            CONF_PEAK_WINDOWS: config_entry.options.get(
+                CONF_PEAK_WINDOWS,
+                config_entry.data.get(CONF_PEAK_WINDOWS, DEFAULT_PEAK_WINDOWS),
+            ),
+        }
+        self._edit_index: int | None = None
 
-        auto_adjust_default = config_entry.options.get(
-            CONF_AUTOADJUSTSCANS,
-            config_entry.data.get(CONF_AUTOADJUSTSCANS, False),
+    def _query_labels(self) -> dict[str, str]:
+        labels: dict[str, str] = {}
+        for idx, query in enumerate(self._queries):
+            origin = query.get(CONF_START, "?")
+            destination = query.get(CONF_END) or "all"
+            label = f"{idx + 1}. {origin} → {destination}"
+            pinned = query.get(CONF_PINNED_DEPARTURE)
+            if pinned:
+                label += f" (pinned {pinned})"
+            labels[str(idx)] = label
+        return labels
+
+    def _settings_schema(self) -> vol.Schema:
+        return vol.Schema(
+            {
+                vol.Optional(CONF_AUTOADJUSTSCANS, default=self._settings[CONF_AUTOADJUSTSCANS]): bool,
+                vol.Optional(CONF_PEAK_INTERVAL, default=self._settings[CONF_PEAK_INTERVAL]): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+                vol.Optional(CONF_OFF_PEAK_INTERVAL, default=self._settings[CONF_OFF_PEAK_INTERVAL]): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
+                vol.Optional(CONF_PEAK_WINDOWS, default=self._settings[CONF_PEAK_WINDOWS]): cv.string,
+            }
         )
-        self._auto_adjust_default = bool(auto_adjust_default)
-        self._peak_interval_default = config_entry.options.get(CONF_PEAK_INTERVAL, config_entry.data.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL))
-        self._off_peak_interval_default = config_entry.options.get(CONF_OFF_PEAK_INTERVAL, config_entry.data.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL))
-        self._peak_windows_default = config_entry.options.get(CONF_PEAK_WINDOWS, config_entry.data.get(CONF_PEAK_WINDOWS, DEFAULT_PEAK_WINDOWS))
+
+    def _pick_query_schema(self) -> vol.Schema:
+        return vol.Schema({vol.Required("query_index"): vol.In(self._query_labels())})
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        menu_options = ["settings", "add_query"]
+        if self._queries:
+            menu_options += ["edit_query", "remove_query"]
+        menu_options.append("save")
+        return self.async_show_menu(step_id="init", menu_options=menu_options)
+
+    async def async_step_settings(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
                 parse_time_windows(user_input.get(CONF_PEAK_WINDOWS, ""))
             except ValueError:
                 errors[CONF_PEAK_WINDOWS] = "invalid_time_windows"
-                force_edit = not self._existing_queries_raw
-                return self.async_show_form(
-                    step_id="init",
-                    data_schema=self._init_schema(force_edit),
-                    errors=errors
-                )
-                
-            self._options[CONF_AUTOADJUSTSCANS] = bool(user_input.get(CONF_AUTOADJUSTSCANS, False))
-            self._options[CONF_PEAK_INTERVAL] = int(user_input.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL))
-            self._options[CONF_OFF_PEAK_INTERVAL] = int(user_input.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL))
-            self._options[CONF_PEAK_WINDOWS] = user_input.get(CONF_PEAK_WINDOWS, "")
 
-            edit_queries = bool(user_input.get(FIELD_EDIT_QUERIES, False))
-
-            if not self._existing_queries_raw:
-                edit_queries = True
-
-            if not edit_queries:
-                options = dict(self._options)
-                options[CONF_QUERIES] = list(self._existing_queries_raw)
-                return self.async_create_entry(title="", data=options)
-
-            return await self.async_step_query()
-
-        force_edit = not self._existing_queries_raw
-        return self.async_show_form(
-            step_id="init",
-            data_schema=self._init_schema(force_edit),
-        )
-
-    async def async_step_query(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            query, add_another, query_errors = _convert_query_input(user_input)
-            if query_errors:
-                errors.update(query_errors)
-                defaults = {
-                    CONF_SENSORNAME: user_input.get(CONF_SENSORNAME, ""),
-                    CONF_START: user_input.get(CONF_START, ""),
-                    CONF_END: user_input.get(CONF_END, ""),
-                    CONF_JOURNEYDATA: user_input.get(CONF_JOURNEYDATA, 0),
-                    FIELD_TIME_OFFSET: user_input.get(FIELD_TIME_OFFSET, 0),
-                    FIELD_PLATFORMS: user_input.get(FIELD_PLATFORMS, ""),
-                    CONF_LOOKBACK: user_input.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES),
-                    FIELD_ADD_ANOTHER: add_another,
+            if not errors:
+                self._settings = {
+                    CONF_AUTOADJUSTSCANS: bool(user_input.get(CONF_AUTOADJUSTSCANS, False)),
+                    CONF_PEAK_INTERVAL: int(user_input.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL)),
+                    CONF_OFF_PEAK_INTERVAL: int(user_input.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL)),
+                    CONF_PEAK_WINDOWS: user_input.get(CONF_PEAK_WINDOWS, ""),
                 }
-                return self._show_query_form(defaults, errors)
+                return await self.async_step_init()
 
-            self._queries.append(query)
-
-            if add_another:
-                defaults = self._prefill_for_index(len(self._queries))
-                return self._show_query_form(defaults, {})
-
-            options = dict(self._options)
-            options[CONF_QUERIES] = list(self._queries)
-            return self.async_create_entry(title="", data=options)
-
-        defaults = self._prefill_for_index(0)
-        return self._show_query_form(defaults, errors)
-
-    def _show_query_form(self, defaults: dict[str, Any], errors: dict[str, str]) -> FlowResult:
-        defaults = dict(defaults)
-        remaining_defaults = len(self._query_defaults) - len(self._queries) - 1
-        defaults.setdefault(FIELD_ADD_ANOTHER, remaining_defaults >= 0)
-
-        description_placeholders = {"added": str(len(self._queries))}
         return self.async_show_form(
-            step_id="query",
-            data_schema=_query_schema(defaults),
-            description_placeholders=description_placeholders,
+            step_id="settings",
+            data_schema=self._settings_schema(),
             errors=errors,
         )
 
-    def _prefill_for_index(self, index: int) -> dict[str, Any]:
-        if index < len(self._query_defaults):
-            defaults = dict(self._query_defaults[index])
-            defaults[FIELD_ADD_ANOTHER] = index < len(self._query_defaults) - 1
-            return defaults
-        return {}
+    async def async_step_add_query(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            query, _, query_errors = _convert_query_input(user_input)
+            if not query_errors:
+                self._queries.append(query)
+                return await self.async_step_init()
+            errors = query_errors
 
-    def _init_schema(self, force_edit: bool) -> vol.Schema:
-        schema_dict: dict[Any, Any] = {
-            vol.Optional(CONF_AUTOADJUSTSCANS, default=self._auto_adjust_default): bool,
-            vol.Optional(CONF_PEAK_INTERVAL, default=self._peak_interval_default): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
-            vol.Optional(CONF_OFF_PEAK_INTERVAL, default=self._off_peak_interval_default): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
-            vol.Optional(CONF_PEAK_WINDOWS, default=self._peak_windows_default): cv.string,
-        }
+        return self.async_show_form(
+            step_id="add_query",
+            data_schema=_query_schema(user_input or {}, include_add_another=False),
+            errors=errors,
+        )
 
-        if force_edit:
-            schema_dict[vol.Optional(FIELD_EDIT_QUERIES, default=True)] = bool
+    async def async_step_edit_query(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        if user_input is not None:
+            self._edit_index = int(user_input["query_index"])
+            return await self.async_step_edit_query_form()
+
+        if len(self._queries) == 1:
+            self._edit_index = 0
+            return await self.async_step_edit_query_form()
+
+        return self.async_show_form(step_id="edit_query", data_schema=self._pick_query_schema())
+
+    async def async_step_edit_query_form(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            query, _, query_errors = _convert_query_input(user_input)
+            if not query_errors:
+                self._queries[self._edit_index] = query
+                return await self.async_step_init()
+            errors = query_errors
+            defaults = dict(user_input)
         else:
-            schema_dict[vol.Optional(FIELD_EDIT_QUERIES, default=False)] = bool
+            defaults = _query_form_defaults(self._queries[self._edit_index])
 
-        return vol.Schema(schema_dict)
+        return self.async_show_form(
+            step_id="edit_query_form",
+            data_schema=_query_schema(defaults, include_add_another=False),
+            errors=errors,
+        )
+
+    async def async_step_remove_query(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        if user_input is not None:
+            index = int(user_input["query_index"])
+            if 0 <= index < len(self._queries):
+                self._queries.pop(index)
+            return await self.async_step_init()
+
+        return self.async_show_form(step_id="remove_query", data_schema=self._pick_query_schema())
+
+    async def async_step_save(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        options = dict(self._settings)
+        options[CONF_QUERIES] = list(self._queries)
+        return self.async_create_entry(title="", data=options)

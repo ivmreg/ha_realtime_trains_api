@@ -166,99 +166,144 @@ def _make_config_entry(queries=None, options=None):
 
 
 @pytest.mark.asyncio
-async def test_options_flow_keeps_existing_queries_when_not_editing():
+async def test_options_menu_lists_actions():
+    handler = RealtimeTrainsOptionsFlowHandler(
+        _make_config_entry(queries=[{"origin": "DFD", "destination": "CST"}])
+    )
+    result = await handler.async_step_init()
+    assert result["type"] == "menu"
+    assert result["menu_options"] == [
+        "settings", "add_query", "edit_query", "remove_query", "save",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_options_menu_hides_edit_remove_without_queries():
+    handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry(queries=[]))
+    result = await handler.async_step_init()
+    assert result["menu_options"] == ["settings", "add_query", "save"]
+
+
+@pytest.mark.asyncio
+async def test_options_settings_then_save_keeps_queries():
     existing = [{"origin": "DFD", "destination": "CST"}]
     handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry(queries=existing))
 
-    result = await handler.async_step_init(
+    result = await handler.async_step_settings(
         {
             "auto_adjust_scans": True,
             "peak_interval": 90,
             "off_peak_interval": 600,
             "peak_windows": "07:00-09:00",
-            "edit_queries": False,
         }
     )
+    assert result["type"] == "menu"
 
+    result = await handler.async_step_save()
     assert result["type"] == "create_entry"
-    options = result["data"]
-    assert options["queries"] == existing
-    assert options["auto_adjust_scans"] is True
-    assert options["peak_interval"] == 90
-    assert options["off_peak_interval"] == 600
+    assert result["data"]["queries"] == existing
+    assert result["data"]["auto_adjust_scans"] is True
+    assert result["data"]["peak_interval"] == 90
+    assert result["data"]["off_peak_interval"] == 600
 
 
 @pytest.mark.asyncio
-async def test_options_flow_edit_prefills_existing_query():
-    existing = [
-        {
-            "origin": "DFD",
-            "destination": "CST",
-            "journey_data_for_next_X_trains": 2,
-            "max_trains": 8,
-            "platforms_of_interest": ["1", "2"],
-        }
-    ]
-    handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry(queries=existing))
-
-    result = await handler.async_step_init(
-        {
-            "auto_adjust_scans": False,
-            "peak_interval": 60,
-            "off_peak_interval": 300,
-            "peak_windows": "",
-            "edit_queries": True,
-        }
-    )
-    assert result["type"] == "form"
-    assert result["step_id"] == "query"
-
-    # Submit an edited version of the prefilled query
-    result = await handler.async_step_query(
-        {**QUERY_INPUT, "origin": "DFD", "destination": "LBG", "max_trains": 5}
-    )
-    assert result["type"] == "create_entry"
-    queries = result["data"]["queries"]
-    assert len(queries) == 1
-    assert queries[0]["destination"] == "LBG"
-    assert queries[0]["max_trains"] == 5
-
-
-@pytest.mark.asyncio
-async def test_options_flow_invalid_time_windows():
-    handler = RealtimeTrainsOptionsFlowHandler(
-        _make_config_entry(queries=[{"origin": "DFD", "destination": "CST"}])
-    )
-
-    result = await handler.async_step_init(
+async def test_options_settings_invalid_time_windows():
+    handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry())
+    result = await handler.async_step_settings(
         {
             "auto_adjust_scans": False,
             "peak_interval": 60,
             "off_peak_interval": 300,
             "peak_windows": "25:99-",
-            "edit_queries": False,
         }
     )
     assert result["type"] == "form"
+    assert result["step_id"] == "settings"
     assert result["errors"] == {"peak_windows": "invalid_time_windows"}
 
 
 @pytest.mark.asyncio
-async def test_options_flow_forces_query_editing_when_none_exist():
+async def test_options_add_query():
     handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry(queries=[]))
 
-    result = await handler.async_step_init(
-        {
-            "auto_adjust_scans": False,
-            "peak_interval": 60,
-            "off_peak_interval": 300,
-            "peak_windows": "",
-            "edit_queries": False,
-        }
+    result = await handler.async_step_add_query(dict(QUERY_INPUT))
+    assert result["type"] == "menu"
+
+    saved = await handler.async_step_save()
+    assert len(saved["data"]["queries"]) == 1
+    assert saved["data"]["queries"][0]["origin"] == "DFD"
+
+
+@pytest.mark.asyncio
+async def test_options_add_query_rejects_invalid_pinned_time():
+    handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry(queries=[]))
+    result = await handler.async_step_add_query(
+        {**QUERY_INPUT, "pinned_departure_time": "26:00"}
     )
-    # With no existing queries the flow must route to the query step anyway
     assert result["type"] == "form"
-    assert result["step_id"] == "query"
+    assert result["errors"] == {"pinned_departure_time": "invalid_pinned_time"}
+
+
+@pytest.mark.asyncio
+async def test_options_edit_single_query_goes_straight_to_form():
+    existing = [{"origin": "DFD", "destination": "CST", "max_trains": 8}]
+    handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry(queries=existing))
+
+    result = await handler.async_step_edit_query()
+    assert result["step_id"] == "edit_query_form"
+
+    result = await handler.async_step_edit_query_form(
+        {**QUERY_INPUT, "origin": "DFD", "destination": "LBG", "max_trains": 5}
+    )
+    assert result["type"] == "menu"
+
+    saved = await handler.async_step_save()
+    assert saved["data"]["queries"][0]["destination"] == "LBG"
+    assert saved["data"]["queries"][0]["max_trains"] == 5
+
+
+@pytest.mark.asyncio
+async def test_options_edit_selects_among_multiple():
+    existing = [
+        {"origin": "DFD", "destination": "CST"},
+        {"origin": "WAT", "destination": "WAL"},
+    ]
+    handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry(queries=existing))
+
+    result = await handler.async_step_edit_query()
+    assert result["type"] == "form"
+    assert result["step_id"] == "edit_query"
+
+    result = await handler.async_step_edit_query({"query_index": "1"})
+    assert result["step_id"] == "edit_query_form"
+
+    await handler.async_step_edit_query_form(
+        {**QUERY_INPUT, "origin": "WAT", "destination": "SUR"}
+    )
+    saved = await handler.async_step_save()
+    assert [q["destination"] for q in saved["data"]["queries"]] == ["CST", "SUR"]
+
+
+@pytest.mark.asyncio
+async def test_options_remove_query():
+    existing = [
+        {"origin": "DFD", "destination": "CST"},
+        {"origin": "WAT", "destination": "WAL"},
+    ]
+    handler = RealtimeTrainsOptionsFlowHandler(_make_config_entry(queries=existing))
+
+    result = await handler.async_step_remove_query()
+    assert result["step_id"] == "remove_query"
+
+    result = await handler.async_step_remove_query({"query_index": "0"})
+    assert result["type"] == "menu"
+    # Menu no longer offers edit/remove once the list is down to one? It does -
+    # one query remains, so both stay available.
+    assert "edit_query" in result["menu_options"]
+
+    saved = await handler.async_step_save()
+    assert [q["origin"] for q in saved["data"]["queries"]] == ["WAT"]
 
 
 @pytest.mark.asyncio

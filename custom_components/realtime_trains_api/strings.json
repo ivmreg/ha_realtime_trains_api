@@ -49,15 +49,26 @@
     "options": {
         "step": {
             "init": {
+                "title": "Realtime Trains options",
+                "menu_options": {
+                    "settings": "Polling settings",
+                    "add_query": "Add a query",
+                    "edit_query": "Edit a query",
+                    "remove_query": "Remove a query",
+                    "save": "Save and finish"
+                }
+            },
+            "settings": {
+                "title": "Polling settings",
                 "data": {
                     "auto_adjust_scans": "Back off polling while a station has no departures",
                     "peak_interval": "Peak polling interval (seconds)",
                     "off_peak_interval": "Off-peak polling interval (seconds)",
-                    "peak_windows": "Peak time windows (HH:MM-HH:MM, comma separated)",
-                    "edit_queries": "Edit queries"
+                    "peak_windows": "Peak time windows (HH:MM-HH:MM, comma separated)"
                 }
             },
-            "query": {
+            "add_query": {
+                "title": "Add a query",
                 "data": {
                     "sensor_name": "Sensor Name (Optional)",
                     "origin": "Origin Station (CRS Code)",
@@ -67,14 +78,39 @@
                     "time_offset_minutes": "Time offset (minutes)",
                     "platforms_input": "Platforms of interest (comma separated)",
                     "lookback_minutes": "Lookback window (minutes)",
-                    "add_another": "Add another query",
                     "pinned_departure_time": "Pin a recurring train (HH:MM scheduled departure, optional)"
-                },
-                "description": "Currently added: {added}"
+                }
+            },
+            "edit_query": {
+                "title": "Edit a query",
+                "data": {
+                    "query_index": "Query to edit"
+                }
+            },
+            "edit_query_form": {
+                "title": "Edit query",
+                "data": {
+                    "sensor_name": "Sensor Name (Optional)",
+                    "origin": "Origin Station (CRS Code)",
+                    "destination": "Destination Station (CRS Code, Optional)",
+                    "journey_data_for_next_X_trains": "Fetch journey details (stops, arrival time) for the first N trains",
+                    "max_trains": "Maximum trains to list (0 = automatic)",
+                    "time_offset_minutes": "Time offset (minutes)",
+                    "platforms_input": "Platforms of interest (comma separated)",
+                    "lookback_minutes": "Lookback window (minutes)",
+                    "pinned_departure_time": "Pin a recurring train (HH:MM scheduled departure, optional)"
+                }
+            },
+            "remove_query": {
+                "title": "Remove a query",
+                "data": {
+                    "query_index": "Query to remove"
+                }
             }
         },
         "error": {
             "invalid_crs": "Invalid CRS code. Must be exactly 3 uppercase letters.",
+            "required": "Required field.",
             "invalid_time_windows": "Invalid time windows. Use HH:MM-HH:MM, comma separated.",
             "invalid_pinned_time": "Invalid pinned departure time. Use HH:MM."
         }
