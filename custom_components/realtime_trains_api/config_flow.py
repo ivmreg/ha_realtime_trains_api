@@ -31,6 +31,7 @@ from .const import (
     CRS_CODE_PATTERN,
     DOMAIN,
     CONF_LOOKBACK,
+    CONF_MAXTRAINS,
     DEFAULT_LOOKBACK_MINUTES,
 )
 from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
@@ -49,7 +50,8 @@ def _user_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(RTT_CONF_REFRESH_TOKEN): cv.string,
-            vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,            vol.Optional(CONF_PEAK_INTERVAL, default=DEFAULT_PEAK_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+            vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,
+            vol.Optional(CONF_PEAK_INTERVAL, default=DEFAULT_PEAK_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
             vol.Optional(CONF_OFF_PEAK_INTERVAL, default=DEFAULT_OFF_PEAK_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
             vol.Optional(CONF_PEAK_WINDOWS, default=DEFAULT_PEAK_WINDOWS): cv.string,
         }
@@ -65,6 +67,9 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Optional(CONF_END, default=defaults.get(CONF_END, "")): cv.string,
             vol.Optional(CONF_JOURNEYDATA, default=defaults.get(CONF_JOURNEYDATA, 0)): vol.All(
                 vol.Coerce(int), vol.Range(min=0)
+            ),
+            vol.Optional(CONF_MAXTRAINS, default=defaults.get(CONF_MAXTRAINS, 0)): vol.All(
+                vol.Coerce(int), vol.Range(min=0, max=50)
             ),
             vol.Optional(FIELD_TIME_OFFSET, default=defaults.get(FIELD_TIME_OFFSET, 0)): vol.All(
                 vol.Coerce(int), vol.Range(min=0, max=MAX_TIME_OFFSET_MINUTES)
@@ -100,6 +105,7 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
         sensor_name = None
 
     journey_data = coerce_positive_int(user_input.get(CONF_JOURNEYDATA, 0))
+    max_trains = coerce_positive_int(user_input.get(CONF_MAXTRAINS, 0)) or None
     time_offset = coerce_positive_int(user_input.get(FIELD_TIME_OFFSET, 0))
     platforms = split_csv(user_input.get(FIELD_PLATFORMS, ""))
     lookback = coerce_positive_int(user_input.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES))
@@ -111,6 +117,7 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
         CONF_START: origin,
         CONF_END: destination,
         CONF_JOURNEYDATA: journey_data,
+        CONF_MAXTRAINS: max_trains,
         CONF_TIMEOFFSET: time_offset,
         CONF_PLATFORMS_OF_INTEREST: platforms,
         CONF_LOOKBACK: lookback,
@@ -130,6 +137,7 @@ def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
         CONF_START: raw_query.get(CONF_START, ""),
         CONF_END: (raw_query.get(CONF_END) or ""),
         CONF_JOURNEYDATA: raw_query.get(CONF_JOURNEYDATA, 0),
+        CONF_MAXTRAINS: raw_query.get(CONF_MAXTRAINS) or 0,
         FIELD_TIME_OFFSET: minutes,
         FIELD_PLATFORMS: ", ".join(platforms),
         CONF_LOOKBACK: raw_query.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES),
@@ -366,7 +374,8 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
 
     def _init_schema(self, force_edit: bool) -> vol.Schema:
         schema_dict: dict[Any, Any] = {
-            vol.Optional(CONF_AUTOADJUSTSCANS, default=self._auto_adjust_default): bool,            vol.Optional(CONF_PEAK_INTERVAL, default=self._peak_interval_default): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+            vol.Optional(CONF_AUTOADJUSTSCANS, default=self._auto_adjust_default): bool,
+            vol.Optional(CONF_PEAK_INTERVAL, default=self._peak_interval_default): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
             vol.Optional(CONF_OFF_PEAK_INTERVAL, default=self._off_peak_interval_default): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
             vol.Optional(CONF_PEAK_WINDOWS, default=self._peak_windows_default): cv.string,
         }

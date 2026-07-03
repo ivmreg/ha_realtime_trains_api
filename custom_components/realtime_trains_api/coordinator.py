@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 import logging
 from typing import Any, cast
@@ -12,19 +13,23 @@ from .const import (
     CONF_START,
     CONF_END,
     CONF_JOURNEYDATA,
+    CONF_MAXTRAINS,
     CONF_TIMEOFFSET,
     CONF_PLATFORMS_OF_INTEREST,
     CONF_LOOKBACK,
     DEFAULT_LOOKBACK_MINUTES,
+    DEFAULT_MAX_TRAINS,
+    NO_TRAINS_BACKOFF_SECONDS,
 )
 from .sensor_helpers import (
+    build_query_key,
     retry_with_auth_refresh,
     parse_rtt_datetime,
     find_last_report,
     subsequent_stop_start_index,
     collect_subsequent_stops,
 )
-from .normalization import coerce_time_offset
+from .normalization import coerce_time_offset, split_csv
 from .rtt_api import (
     RealtimeTrainsApiAuthError,
     RealtimeTrainsApiClient,
@@ -36,6 +41,11 @@ from .rtt_api import (
 _LOGGER = logging.getLogger(__name__)
 TIMEZONE = pytz.timezone('Europe/London')
 STRFFORMAT = "%d-%m-%Y %H:%M"
+
+# How many journey-detail requests may be in flight at once. Kept low so a
+# board with journey data for several trains stays well inside the RTT
+# per-minute rate budget.
+JOURNEY_DATA_CONCURRENCY = 2
 
 def _delta_seconds(hhmm_datetime_a: datetime, hhmm_datetime_b: datetime) -> float:
     a_trunc = hhmm_datetime_a.replace(second=0, microsecond=0)
@@ -56,6 +66,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         peak_interval: int = 60,
         off_peak_interval: int = 300,
         peak_windows: list = None,
+        auto_adjust_scans: bool = False,
     ) -> None:
         """Initialize."""
         super().__init__(
@@ -69,8 +80,11 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.peak_interval = peak_interval
         self.off_peak_interval = off_peak_interval
         self.peak_windows = peak_windows or []
+        self.auto_adjust_scans = auto_adjust_scans
         self.current_polling_interval = None
         self.last_update_time = None
+        self.last_successful_update: datetime | None = None
+        self.data_stale = False
 
     async def _async_refresh_token(self) -> bool:
         """Refresh the access token."""
@@ -158,7 +172,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             "status": status,
                         })
                         found_dest = True
-            
+
             stopCount += 1
 
         train["subsequent_stops"] = subsequent_stops
@@ -175,181 +189,254 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
         return None
 
+    def _is_peak(self, now: datetime) -> bool:
+        """Return True when now falls inside a peak window (or none are set)."""
+        if not self.peak_windows:
+            return True
+        current_time = now.time()
+        return any(start <= current_time <= end for start, end in self.peak_windows)
+
+    def _set_polling_interval(self, seconds: int) -> None:
+        if self.current_polling_interval != seconds:
+            self.current_polling_interval = seconds
+            self.update_interval = timedelta(seconds=seconds)
+            _LOGGER.debug("Adjusted polling interval to %s seconds", seconds)
+
+    @staticmethod
+    def _parse_departure_times(
+        departure: dict[str, Any], now: datetime
+    ) -> tuple[datetime, datetime] | None:
+        """Extract (scheduled, estimated) timestamps from a service, or None."""
+        temporal_data = departure.get("temporalData", {}).get("departure", {})
+        scheduled_str = temporal_data.get("scheduleAdvertised") or temporal_data.get("scheduleInternal")
+        estimated_str = temporal_data.get("realtimeActual") or temporal_data.get("realtimeForecast") or temporal_data.get("realtimeEstimate")
+
+        if not scheduled_str:
+            return None
+
+        try:
+            scheduledTs = parse_rtt_datetime(scheduled_str, TIMEZONE)
+        except ValueError:
+            return None
+
+        estimatedTs = scheduledTs
+        if estimated_str:
+            try:
+                estimatedTs = parse_rtt_datetime(estimated_str, TIMEZONE)
+            except ValueError:
+                estimatedTs = scheduledTs
+
+        return scheduledTs, estimatedTs
+
+    @staticmethod
+    def _build_train(
+        departure: dict[str, Any],
+        scheduledTs: datetime,
+        estimatedTs: datetime,
+        now: datetime,
+        platform: Any,
+    ) -> dict[str, Any]:
+        """Assemble the next_trains entry for a single service."""
+        schedule_metadata = departure.get("scheduleMetadata", {})
+        loc_metadata = departure.get("locationMetadata", {})
+        temporal_data = departure.get("temporalData", {}).get("departure", {})
+
+        origins = departure.get("origin", [])
+        origin_name = origins[0].get("location", {}).get("description", "") if origins else ""
+
+        destinations = departure.get("destination", [])
+        destination_name = destinations[0].get("location", {}).get("description", "") if destinations else ""
+
+        return {
+            "origin_name": origin_name,
+            "destination_name": destination_name,
+            "service_uid": schedule_metadata.get("identity"),
+            "headcode": schedule_metadata.get("trainReportingIdentity"),
+            "type": schedule_metadata.get("modeType"),
+            "operator_name": schedule_metadata.get("operator", {}).get("name", ""),
+            "scheduled": scheduledTs.strftime(STRFFORMAT),
+            "estimated": estimatedTs.strftime(STRFFORMAT),
+            "minutes": _delta_seconds(estimatedTs, now) // 60,
+            "lateness": temporal_data.get("realtimeAdvertisedLateness"),
+            "is_cancelled": temporal_data.get("isCancelled", False),
+            "platform": platform,
+            "length": loc_metadata.get("numberOfVehicles"),
+            "stock": loc_metadata.get("stockBranding"),
+        }
+
+    async def _fetch_one_query(
+        self, query: dict[str, Any], now: datetime
+    ) -> tuple[str, dict[str, Any]]:
+        """Fetch, filter and enrich the departures for a single configured query."""
+        origin = query.get(CONF_START)
+        destination = query.get(CONF_END)
+        platforms = query.get(CONF_PLATFORMS_OF_INTEREST, [])
+        time_offset = coerce_time_offset(query.get(CONF_TIMEOFFSET, timedelta()), timedelta())
+        journey_data_count = query.get(CONF_JOURNEYDATA, 0) or 0
+        lookback_mins = query.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES)
+        query_dt = now - timedelta(minutes=lookback_mins)
+
+        # Backwards compatibility: before max_trains existed, the board length
+        # was (buggily) capped at journey_data_count, so keep that as the
+        # default when journey data is requested.
+        max_trains = query.get(CONF_MAXTRAINS) or (
+            journey_data_count if journey_data_count > 0 else DEFAULT_MAX_TRAINS
+        )
+
+        if isinstance(platforms, str):
+            platforms = split_csv(platforms)
+        platforms_of_interest = set(platforms)
+
+        query_key = build_query_key(origin, destination, platforms_of_interest, time_offset)
+
+        _LOGGER.debug(
+            "Fetching location services for %s to %s at %s",
+            origin,
+            destination,
+            now.strftime("%H%M"),
+        )
+
+        data = await retry_with_auth_refresh(
+            lambda: self.api.fetch_location_services(
+                origin,
+                destination,
+                query_dt.date(),
+                query_dt.strftime("%H%M"),
+                time_window=lookback_mins + 120,
+            ),
+            self._async_refresh_token,
+        )
+
+        services = data.get("services") if data and isinstance(data, dict) else None
+        departures = services or []
+
+        next_trains: list[dict[str, Any]] = []
+        enrichment: list[tuple[dict[str, Any], datetime, datetime]] = []
+        nextDepartureEstimatedTs = None
+        state = None
+
+        for departure in departures:
+            schedule_metadata = departure.get("scheduleMetadata", {})
+            if not schedule_metadata.get("inPassengerService", False):
+                continue
+
+            loc_metadata = departure.get("locationMetadata", {})
+            platform_dict = loc_metadata.get("platform", {})
+            platform = platform_dict.get("actual") or platform_dict.get("planned")
+            platform_key = platform.strip() if isinstance(platform, str) else platform
+            if platforms_of_interest and platform_key not in platforms_of_interest:
+                continue
+
+            if not schedule_metadata.get("departureDate"):
+                continue
+
+            times = self._parse_departure_times(departure, now)
+            if times is None:
+                continue
+            scheduledTs, estimatedTs = times
+
+            if _delta_seconds(estimatedTs, now) < time_offset.total_seconds():
+                continue
+
+            if nextDepartureEstimatedTs is None:
+                nextDepartureEstimatedTs = estimatedTs
+            else:
+                nextDepartureEstimatedTs = min(nextDepartureEstimatedTs, estimatedTs)
+
+            train = self._build_train(departure, scheduledTs, estimatedTs, now, platform)
+            next_trains.append(train)
+            if len(next_trains) <= journey_data_count:
+                enrichment.append((train, scheduledTs, estimatedTs))
+            if len(next_trains) >= max_trains:
+                break
+
+        err_state = await self._enrich_journey_data(enrichment, origin, destination)
+        if err_state:
+            state = err_state
+        elif nextDepartureEstimatedTs is not None:
+            state = _delta_seconds(nextDepartureEstimatedTs, now) // 60
+
+        return query_key, {
+            "state": state,
+            "next_trains": next_trains,
+            "journey_start": origin,
+            "journey_end": destination,
+            "platforms_of_interest": platforms_of_interest,
+        }
+
+    async def _enrich_journey_data(
+        self,
+        trains: list[tuple[dict[str, Any], datetime, datetime]],
+        origin: str,
+        destination: str | None,
+    ) -> str | None:
+        """Fetch journey details for the given trains with bounded concurrency.
+
+        Returns the first error state encountered, if any. _add_journey_data
+        swallows API errors into these state strings, so gather cannot raise
+        anything except auth failures surfaced by the last retry.
+        """
+        if not trains:
+            return None
+
+        semaphore = asyncio.Semaphore(JOURNEY_DATA_CONCURRENCY)
+
+        async def enrich(train, scheduledTs, estimatedTs):
+            async with semaphore:
+                return await self._add_journey_data(
+                    train, scheduledTs, estimatedTs, origin, destination
+                )
+
+        results = await asyncio.gather(
+            *(enrich(train, sched, est) for train, sched, est in trains)
+        )
+        return next((err for err in results if err), None)
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API endpoint."""
         now = cast(datetime, dt_util.now()).astimezone(TIMEZONE)
-        
-        is_peak = False
-        if not self.peak_windows:
-            is_peak = True
-        else:
-            current_time = now.time()
-            for start_time, end_time in self.peak_windows:
-                if start_time <= current_time <= end_time:
-                    is_peak = True
-                    break
-        
-        target_interval = self.peak_interval if is_peak else self.off_peak_interval
-        if self.current_polling_interval != target_interval:
-            self.current_polling_interval = target_interval
-            self.update_interval = timedelta(seconds=target_interval)
-            _LOGGER.debug("Adjusted polling interval to %s seconds", target_interval)
-            
+
+        target_interval = self.peak_interval if self._is_peak(now) else self.off_peak_interval
+        self._set_polling_interval(target_interval)
+
         self.last_update_time = now
-        result_data = {}
 
         try:
+            result_data = {}
             for query in self.queries:
-                origin = query.get(CONF_START)
-                destination = query.get(CONF_END)
-                platforms = query.get(CONF_PLATFORMS_OF_INTEREST, [])
-                time_offset = coerce_time_offset(query.get(CONF_TIMEOFFSET, timedelta()), timedelta())
-                journey_data_count = query.get(CONF_JOURNEYDATA, 0)
-                lookback_mins = query.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES)
-                query_dt = now - timedelta(minutes=lookback_mins)
-                
-                if isinstance(platforms, str):
-                    platforms = [p.strip() for p in platforms.split(',') if p.strip()]
-                platforms_of_interest = set(platforms)
-
-                platforms_str = "_".join(sorted(platforms_of_interest)) if platforms_of_interest else "all"
-                dest_str = destination if destination else "all"
-                offset_str = f"{int(time_offset.total_seconds())}" if time_offset.total_seconds() > 0 else "0"
-                query_key = f"{origin}_{dest_str}_{platforms_str}_{offset_str}"
-
-                _LOGGER.debug(
-                    "Fetching location services for %s to %s at %s",
-                    origin,
-                    destination,
-                    now.strftime("%H%M"),
-                )
-                
-                data = await retry_with_auth_refresh(
-                    lambda: self.api.fetch_location_services(
-                        origin,
-                        destination,
-                        query_dt.date(),
-                        query_dt.strftime("%H%M"),
-                        time_window=lookback_mins + 120,
-                    ),
-                    self._async_refresh_token,
-                )
-                
-                services = data.get("services") if data and isinstance(data, dict) else None
-                departures = services or []
-                
-                next_trains = []
-                departureCount = 0
-                nextDepartureEstimatedTs = None
-                state = None
-
-                for departure in departures:
-                    schedule_metadata = departure.get("scheduleMetadata", {})
-                    if not schedule_metadata.get("inPassengerService", False):
-                        continue
-
-                    loc_metadata = departure.get("locationMetadata", {})
-                    platform_dict = loc_metadata.get("platform", {})
-                    platform = platform_dict.get("actual") or platform_dict.get("planned")
-                    platform_key = platform.strip() if isinstance(platform, str) else platform
-                    if platforms_of_interest and platform_key not in platforms_of_interest:
-                        continue
-
-                    departuredate_str = schedule_metadata.get("departureDate")
-                    if not departuredate_str:
-                        continue
-
-                    temporal_data = departure.get("temporalData", {}).get("departure", {})
-                    scheduled_str = temporal_data.get("scheduleAdvertised") or temporal_data.get("scheduleInternal")
-                    estimated_str = temporal_data.get("realtimeActual") or temporal_data.get("realtimeForecast") or temporal_data.get("realtimeEstimate")
-
-                    if not scheduled_str:
-                        continue
-
-                    try:
-                        scheduledTs = parse_rtt_datetime(scheduled_str, TIMEZONE)
-                    except ValueError:
-                        continue
-
-                    if estimated_str:
-                        try:
-                            estimatedTs = parse_rtt_datetime(estimated_str, TIMEZONE)
-                        except ValueError:
-                            estimatedTs = scheduledTs
-                    else:
-                        estimatedTs = scheduledTs
-
-                    if _delta_seconds(estimatedTs, now) < time_offset.total_seconds():
-                        continue
-
-                    if nextDepartureEstimatedTs is None:
-                        nextDepartureEstimatedTs = estimatedTs
-                    else:
-                        nextDepartureEstimatedTs = min(nextDepartureEstimatedTs, estimatedTs)
-
-                    departureCount += 1
-
-                    origins = departure.get("origin", [])
-                    origin_name = origins[0].get("location", {}).get("description", "") if origins else ""
-
-                    destinations = departure.get("destination", [])
-                    destination_name = destinations[0].get("location", {}).get("description", "") if destinations else ""
-
-                    service_uid = schedule_metadata.get("identity")
-                    headcode = schedule_metadata.get("trainReportingIdentity")
-                    mode_type = schedule_metadata.get("modeType")
-                    operator_name = schedule_metadata.get("operator", {}).get("name", "")
-                    
-                    length = loc_metadata.get("numberOfVehicles")
-                    stock = loc_metadata.get("stockBranding")
-                    
-                    lateness = temporal_data.get("realtimeAdvertisedLateness")
-                    is_cancelled = temporal_data.get("isCancelled", False)
-
-                    train = {
-                        "origin_name": origin_name,
-                        "destination_name": destination_name,
-                        "service_uid": service_uid,
-                        "headcode": headcode,
-                        "type": mode_type,
-                        "operator_name": operator_name,
-                        "scheduled": scheduledTs.strftime(STRFFORMAT),
-                        "estimated": estimatedTs.strftime(STRFFORMAT),
-                        "minutes": _delta_seconds(estimatedTs, now) // 60,
-                        "lateness": lateness,
-                        "is_cancelled": is_cancelled,
-                        "platform": platform,
-                        "length": length,
-                        "stock": stock,
-                    }
-                    if departureCount > journey_data_count:
-                        break
-                    
-                    err_state = await self._add_journey_data(train, scheduledTs, estimatedTs, origin, destination)
-                    if err_state:
-                        state = err_state
-                    next_trains.append(train)
-
-                if state is None:
-                    if nextDepartureEstimatedTs is None:
-                        state = None
-                    else:
-                        state = _delta_seconds(nextDepartureEstimatedTs, now) // 60
-                
-                result_data[query_key] = {
-                    "state": state,
-                    "next_trains": next_trains,
-                    "journey_start": origin,
-                    "journey_end": destination,
-                    "platforms_of_interest": platforms_of_interest,
-                }
-
-            return result_data
+                query_key, query_result = await self._fetch_one_query(query, now)
+                result_data[query_key] = query_result
         except RealtimeTrainsApiAuthError as err:
             raise ConfigEntryAuthFailed(err) from err
         except RealtimeTrainsApiRateLimitError as err:
+            stale = self._serve_stale_data(f"Rate limit hit: {err}")
+            if stale is not None:
+                return stale
             raise UpdateFailed(f"Rate limit hit: {err}") from err
         except RealtimeTrainsApiError as err:
+            stale = self._serve_stale_data(f"Error communicating with API: {err}")
+            if stale is not None:
+                return stale
             raise UpdateFailed(f"Error communicating with API: {err}") from err
         except Exception as err:
             raise UpdateFailed(f"Unexpected error: {err}") from err
+
+        self.data_stale = False
+        self.last_successful_update = now
+
+        if (
+            self.auto_adjust_scans
+            and all(not result["next_trains"] for result in result_data.values())
+        ):
+            self._set_polling_interval(max(NO_TRAINS_BACKOFF_SECONDS, target_interval))
+
+        return result_data
+
+    def _serve_stale_data(self, reason: str) -> dict[str, Any] | None:
+        """Return the last-known data marked stale, or None when there is none."""
+        last_known = getattr(self, "data", None)
+        if not last_known:
+            return None
+        self.data_stale = True
+        _LOGGER.warning("Serving last-known train data: %s", reason)
+        return last_known

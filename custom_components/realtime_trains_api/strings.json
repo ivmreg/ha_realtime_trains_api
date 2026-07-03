@@ -5,7 +5,10 @@
                 "data": {
                     "token": "Access Token",
                     "refresh_token": "Refresh Token",
-                    "auto_adjust_scans": "Auto adjust scan interval"
+                    "auto_adjust_scans": "Back off polling while a station has no departures",
+                    "peak_interval": "Peak polling interval (seconds)",
+                    "off_peak_interval": "Off-peak polling interval (seconds)",
+                    "peak_windows": "Peak time windows (HH:MM-HH:MM, comma separated)"
                 }
             },
             "query": {
@@ -13,7 +16,8 @@
                     "sensor_name": "Sensor Name (Optional)",
                     "origin": "Origin Station (CRS Code)",
                     "destination": "Destination Station (CRS Code, Optional)",
-                    "journey_data_for_next_X_trains": "Number of future trains to include",
+                    "journey_data_for_next_X_trains": "Fetch journey details (stops, arrival time) for the first N trains",
+                    "max_trains": "Maximum trains to list (0 = automatic)",
                     "time_offset_minutes": "Time offset (minutes)",
                     "platforms_input": "Platforms of interest (comma separated)",
                     "lookback_minutes": "Lookback window (minutes)",
@@ -26,7 +30,39 @@
             "invalid_crs": "Invalid CRS code. Must be exactly 3 uppercase letters.",
             "required": "Required field.",
             "invalid_auth": "Authentication failed. Check your refresh token.",
-            "cannot_connect": "Failed to connect to RTT API."
+            "cannot_connect": "Failed to connect to RTT API.",
+            "invalid_time_windows": "Invalid time windows. Use HH:MM-HH:MM, comma separated."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "data": {
+                    "auto_adjust_scans": "Back off polling while a station has no departures",
+                    "peak_interval": "Peak polling interval (seconds)",
+                    "off_peak_interval": "Off-peak polling interval (seconds)",
+                    "peak_windows": "Peak time windows (HH:MM-HH:MM, comma separated)",
+                    "edit_queries": "Edit queries"
+                }
+            },
+            "query": {
+                "data": {
+                    "sensor_name": "Sensor Name (Optional)",
+                    "origin": "Origin Station (CRS Code)",
+                    "destination": "Destination Station (CRS Code, Optional)",
+                    "journey_data_for_next_X_trains": "Fetch journey details (stops, arrival time) for the first N trains",
+                    "max_trains": "Maximum trains to list (0 = automatic)",
+                    "time_offset_minutes": "Time offset (minutes)",
+                    "platforms_input": "Platforms of interest (comma separated)",
+                    "lookback_minutes": "Lookback window (minutes)",
+                    "add_another": "Add another query"
+                },
+                "description": "Currently added: {added}"
+            }
+        },
+        "error": {
+            "invalid_crs": "Invalid CRS code. Must be exactly 3 uppercase letters.",
+            "invalid_time_windows": "Invalid time windows. Use HH:MM-HH:MM, comma separated."
         }
     }
 }

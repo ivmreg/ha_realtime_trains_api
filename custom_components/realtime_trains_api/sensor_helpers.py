@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, TypeVar, cast
 
@@ -12,6 +12,20 @@ T = TypeVar("T")
 
 RTT_TIME_FORMAT = "%d-%m-%Y %H:%M"
 SUBSEQUENT_STOP_DISPLAY_AS = frozenset({"CALL", "DEST"})
+
+
+def build_query_key(
+    origin: str,
+    destination: str | None,
+    platforms_of_interest: Iterable[str],
+    time_offset: timedelta,
+) -> str:
+    """Build the key linking a configured query to its coordinator data."""
+    platforms = sorted(platforms_of_interest)
+    platforms_str = "_".join(platforms) if platforms else "all"
+    dest_str = destination if destination else "all"
+    offset_str = f"{int(time_offset.total_seconds())}" if time_offset.total_seconds() > 0 else "0"
+    return f"{origin}_{dest_str}_{platforms_str}_{offset_str}"
 
 
 def build_default_sensor_name(

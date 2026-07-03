@@ -166,3 +166,151 @@ async def test_coordinator_dynamic_interval():
         await coordinator._async_update_data()
         assert getattr(coordinator, "update_interval", None) == timedelta(seconds=300)
         assert coordinator.current_polling_interval == 300
+
+
+def _service(uid: str, sched: str = "2026-04-07T12:05:00Z") -> dict:
+    return {
+        "scheduleMetadata": {
+            "identity": uid,
+            "inPassengerService": True,
+            "departureDate": "2026-04-07",
+        },
+        "temporalData": {"departure": {"scheduleAdvertised": sched}},
+    }
+
+
+def _make_coordinator(api, queries, **kwargs):
+    return RealtimeTrainsUpdateCoordinator(
+        hass=MagicMock(),
+        logger=MagicMock(),
+        name="test",
+        update_interval=timedelta(minutes=1),
+        api=api,
+        queries=queries,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_journey_data_zero_still_lists_trains():
+    """Regression: with journey data disabled, next_trains used to come back empty."""
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={
+        "services": [_service("S1"), _service("S2", "2026-04-07T12:10:00Z"), _service("S3", "2026-04-07T12:15:00Z")]
+    })
+    api.fetch_service_details = AsyncMock()
+
+    coordinator = _make_coordinator(api, [{"origin": "WAL", "destination": "WAT"}])
+
+    with freeze_time("2026-04-07 12:00:00"):
+        data = await coordinator._async_update_data()
+
+    assert len(data["WAL_WAT_all_0"]["next_trains"]) == 3
+    api.fetch_service_details.assert_not_called()
+    assert data["WAL_WAT_all_0"]["state"] == 5
+
+
+@pytest.mark.asyncio
+async def test_journey_data_enriches_only_first_n():
+    """journey_data_for_next_X_trains controls enrichment, max_trains list length."""
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={
+        "services": [_service("S1"), _service("S2", "2026-04-07T12:10:00Z"), _service("S3", "2026-04-07T12:15:00Z")]
+    })
+    api.fetch_service_details = AsyncMock(return_value={"service": {"locations": []}})
+
+    coordinator = _make_coordinator(
+        api,
+        [{"origin": "WAL", "destination": "WAT", "journey_data_for_next_X_trains": 1, "max_trains": 10}],
+    )
+
+    with freeze_time("2026-04-07 12:00:00"):
+        data = await coordinator._async_update_data()
+
+    assert len(data["WAL_WAT_all_0"]["next_trains"]) == 3
+    assert api.fetch_service_details.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_journey_data_default_max_preserves_old_length():
+    """Without an explicit max_trains, board length defaults to journey_data_count."""
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={
+        "services": [_service("S1"), _service("S2", "2026-04-07T12:10:00Z"), _service("S3", "2026-04-07T12:15:00Z")]
+    })
+    api.fetch_service_details = AsyncMock(return_value={"service": {"locations": []}})
+
+    coordinator = _make_coordinator(
+        api,
+        [{"origin": "WAL", "destination": "WAT", "journey_data_for_next_X_trains": 2}],
+    )
+
+    with freeze_time("2026-04-07 12:00:00"):
+        data = await coordinator._async_update_data()
+
+    assert len(data["WAL_WAT_all_0"]["next_trains"]) == 2
+    assert api.fetch_service_details.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_max_trains_caps_list():
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={
+        "services": [_service(f"S{i}", f"2026-04-07T12:{5 + i:02d}:00Z") for i in range(5)]
+    })
+
+    coordinator = _make_coordinator(
+        api, [{"origin": "WAL", "destination": "WAT", "max_trains": 2}]
+    )
+
+    with freeze_time("2026-04-07 12:00:00"):
+        data = await coordinator._async_update_data()
+
+    assert len(data["WAL_WAT_all_0"]["next_trains"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_adjust_scans_backs_off_when_no_trains():
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={"services": []})
+
+    coordinator = _make_coordinator(
+        api,
+        [{"origin": "WAL", "destination": "WAT"}],
+        peak_interval=60,
+        off_peak_interval=300,
+        auto_adjust_scans=True,
+    )
+
+    with freeze_time("2026-04-07 12:00:00"):
+        await coordinator._async_update_data()
+    assert coordinator.current_polling_interval == 1800
+
+    # Trains appear again -> interval returns to normal
+    api.fetch_location_services = AsyncMock(return_value={"services": [_service("S1")]})
+    with freeze_time("2026-04-07 12:00:00"):
+        await coordinator._async_update_data()
+    assert coordinator.current_polling_interval == 60
+
+
+@pytest.mark.asyncio
+async def test_stale_data_served_on_rate_limit():
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={"services": [_service("S1")]})
+
+    coordinator = _make_coordinator(api, [{"origin": "WAL", "destination": "WAT"}])
+
+    with freeze_time("2026-04-07 12:00:00"):
+        good_data = await coordinator._async_update_data()
+    coordinator.data = good_data  # normally done by DataUpdateCoordinator
+    assert coordinator.data_stale is False
+
+    api.fetch_location_services = AsyncMock(
+        side_effect=RealtimeTrainsApiRateLimitError("Rate limit", retry_after=60)
+    )
+    with freeze_time("2026-04-07 12:01:00"):
+        stale = await coordinator._async_update_data()
+
+    assert stale is good_data
+    assert coordinator.data_stale is True
+    assert coordinator.last_successful_update is not None
