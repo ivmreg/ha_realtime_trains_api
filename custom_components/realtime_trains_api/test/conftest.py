@@ -93,8 +93,44 @@ device_registry.DeviceInfo = type("DeviceInfo", (dict,), {})
 device_registry.DeviceEntryType = type("DeviceEntryType", (object,), {"SERVICE": "service"})
 diagnostics.async_redact_data = MagicMock(name="async_redact_data", side_effect=lambda data, to_redact: {k: "**REDACTED**" if k in to_redact else v for k, v in data.items()} if data else data)
 
-config_entries.ConfigFlow = type("ConfigFlow", (object,), {})
-config_entries.OptionsFlow = type("OptionsFlow", (object,), {})
+class _FlowBase:
+    """Minimal stand-in for HA's data-entry flow helpers."""
+
+    hass = None
+    unique_id = None
+
+    def async_show_form(
+        self,
+        *,
+        step_id,
+        data_schema=None,
+        errors=None,
+        description_placeholders=None,
+        **kwargs,
+    ):
+        return {
+            "type": "form",
+            "step_id": step_id,
+            "data_schema": data_schema,
+            "errors": errors or {},
+            "description_placeholders": description_placeholders,
+        }
+
+    def async_create_entry(self, *, title=None, data=None, **kwargs):
+        return {"type": "create_entry", "title": title, "data": data}
+
+    def async_abort(self, *, reason):
+        return {"type": "abort", "reason": reason}
+
+    async def async_set_unique_id(self, unique_id):
+        self.unique_id = unique_id
+
+    def _abort_if_unique_id_configured(self):
+        pass
+
+
+config_entries.ConfigFlow = type("ConfigFlow", (_FlowBase,), {})
+config_entries.OptionsFlow = type("OptionsFlow", (_FlowBase,), {})
 config_entries.ConfigEntry = type("ConfigEntry", (object,), {})
 config_entries.HANDLERS = _HandlerRegistry()
 

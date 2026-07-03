@@ -75,6 +75,17 @@ This is useful for:
 - Tracking trains from a specific platform at your local station
 - Planning journeys when you have multiple destination options
 
+### Resilience & freshness attributes
+
+Each sensor exposes attributes a dashboard can use to judge how fresh the data is:
+
+- `current_polling_interval` / `next_update_at` — the active polling cadence and when the next refresh is due.
+- `data_stale` / `last_successful_update` — when the RTT API is down or rate-limited, the integration keeps serving the last-known departures (instead of the sensor going unavailable) and sets `data_stale: true` so a card can show a "last-known data" indicator.
+
+### Diagnostics
+
+The integration implements Home Assistant config-entry diagnostics: on the integration page, use "Download diagnostics" to get a redacted bundle (configured queries, polling state, rate-limit budget) for bug reports.
+
 ## Installation & Usage
 
 1. Signup to https://api.rtt.io
@@ -110,6 +121,14 @@ sensor:
       - origin: WAT
         # Monitor all trains from Waterloo (no destination, no platform filter)
         journey_data_for_next_X_trains: 10
+      - origin: DFD
+        destination: CST
+        # max_trains caps how many departures are listed in next_trains.
+        # If omitted it defaults to journey_data_for_next_X_trains (when set)
+        # or 10. journey_data_for_next_X_trains only controls how many of the
+        # listed trains get journey details (stops, arrival time, duration).
+        max_trains: 8
+        journey_data_for_next_X_trains: 3
 ```
 5. Restart HA
 6. Your `sensor` will be named something like `sensor.next_train_from_wal_to_wat` (unless you specified a `sensor_name`) for each query you defined in your configuration.
@@ -138,16 +157,6 @@ rest_command:
     url: "https://data.rtt.io/gb-nr/service?identity={{ uid }}&departureDate={{ date }}"
     headers:
       Authorization: "Bearer !secret rtt_token"
-```
-
-3. Import the `blueprint.yaml` into your Home Assistant instance to create automations based on train schedules.
- date }}"
-    headers:
-      Authorization: "Bearer !secret rtt_token"
-```
-
-3. Import the `blueprint.yaml` into your Home Assistant instance to create automations based on train schedules.
-     Authorization: "Bearer !secret rtt_token"
 ```
 
 3. Import the `blueprint.yaml` into your Home Assistant instance to create automations based on train schedules.
