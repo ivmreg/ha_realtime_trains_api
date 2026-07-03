@@ -259,3 +259,44 @@ async def test_options_flow_forces_query_editing_when_none_exist():
     # With no existing queries the flow must route to the query step anyway
     assert result["type"] == "form"
     assert result["step_id"] == "query"
+
+
+@pytest.mark.asyncio
+async def test_reauth_updates_entry_and_reloads():
+    flow = _make_flow()
+    entry = _make_config_entry()
+    flow.hass.config_entries.async_get_entry = MagicMock(return_value=entry)
+    flow.hass.config_entries.async_update_entry = MagicMock()
+    flow.hass.config_entries.async_reload = AsyncMock()
+    flow.context = {"entry_id": entry.entry_id}
+
+    with _patch_api_client(token="new-access-token"):
+        result = await flow.async_step_reauth(dict(entry.data))
+        assert result["type"] == "form"
+        assert result["step_id"] == "reauth_confirm"
+
+        result = await flow.async_step_reauth_confirm(
+            {"refresh_token": "new-refresh-token"}
+        )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "reauth_successful"
+    updated_data = flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
+    assert updated_data["token"] == "new-access-token"
+    assert updated_data["refresh_token"] == "new-refresh-token"
+    flow.hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+
+
+@pytest.mark.asyncio
+async def test_reauth_rejects_bad_token():
+    flow = _make_flow()
+    entry = _make_config_entry()
+    flow.hass.config_entries.async_get_entry = MagicMock(return_value=entry)
+    flow.context = {"entry_id": entry.entry_id}
+
+    with _patch_api_client(auth_error=True):
+        await flow.async_step_reauth(dict(entry.data))
+        result = await flow.async_step_reauth_confirm({"refresh_token": "bad"})
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"refresh_token": "invalid_auth"}

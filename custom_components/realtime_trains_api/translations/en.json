@@ -24,6 +24,13 @@
                     "add_another": "Add another query"
                 },
                 "description": "Currently added: {added}"
+            },
+            "reauth_confirm": {
+                "title": "Reauthenticate with Realtime Trains",
+                "data": {
+                    "refresh_token": "Refresh Token"
+                },
+                "description": "Your Realtime Trains credentials stopped working. Enter a new refresh token from api.rtt.io."
             }
         },
         "error": {
@@ -32,6 +39,9 @@
             "invalid_auth": "Authentication failed. Check your refresh token.",
             "cannot_connect": "Failed to connect to RTT API.",
             "invalid_time_windows": "Invalid time windows. Use HH:MM-HH:MM, comma separated."
+        },
+        "abort": {
+            "reauth_successful": "Reauthentication was successful."
         }
     },
     "options": {

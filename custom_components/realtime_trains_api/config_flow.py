@@ -155,6 +155,54 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
     def __init__(self) -> None:
         self._config_data: dict[str, Any] = {}
         self._queries: list[dict[str, Any]] = []
+        self._reauth_entry: config_entries.ConfigEntry | None = None
+
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
+        """Handle reauthentication when the stored refresh token stops working."""
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+
+        if user_input is not None and self._reauth_entry is not None:
+            refresh_token = str(user_input.get(RTT_CONF_REFRESH_TOKEN, "")).strip()
+            if not refresh_token:
+                errors[RTT_CONF_REFRESH_TOKEN] = "required"
+            else:
+                try:
+                    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+                    session = async_get_clientsession(self.hass)
+                    client = RealtimeTrainsApiClient(session, "none", refresh_token)
+                    access_token = await client.async_get_access_token()
+
+                    self.hass.config_entries.async_update_entry(
+                        self._reauth_entry,
+                        data={
+                            **self._reauth_entry.data,
+                            RTT_CONF_API_TOKEN: access_token,
+                            RTT_CONF_REFRESH_TOKEN: refresh_token,
+                        },
+                    )
+                    await self.hass.config_entries.async_reload(
+                        self._reauth_entry.entry_id
+                    )
+                    return self.async_abort(reason="reauth_successful")
+                except RealtimeTrainsApiAuthError:
+                    errors[RTT_CONF_REFRESH_TOKEN] = "invalid_auth"
+                except Exception:  # pylint: disable=broad-except
+                    _LOGGER.exception("Unexpected error during reauth")
+                    errors["base"] = "cannot_connect"
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(RTT_CONF_REFRESH_TOKEN): cv.string}),
+            errors=errors,
+        )
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}

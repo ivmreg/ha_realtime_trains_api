@@ -45,7 +45,7 @@ def build_default_sensor_name(
 
 
 def _localize_datetime(value: datetime, fallback_tz: Any) -> datetime:
-    """Attach a timezone to a naive datetime, using pytz localize when available."""
+    """Attach a timezone to a naive datetime (pytz-style localize supported for back-compat)."""
     if value.tzinfo is not None:
         return value
 

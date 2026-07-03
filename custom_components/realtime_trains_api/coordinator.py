@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 import logging
 from typing import Any, cast
-import pytz
+from zoneinfo import ZoneInfo
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -39,7 +39,7 @@ from .rtt_api import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-TIMEZONE = pytz.timezone('Europe/London')
+TIMEZONE = ZoneInfo('Europe/London')
 STRFFORMAT = "%d-%m-%Y %H:%M"
 
 # How many journey-detail requests may be in flight at once. Kept low so a
@@ -313,7 +313,6 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         next_trains: list[dict[str, Any]] = []
         enrichment: list[tuple[dict[str, Any], datetime, datetime]] = []
         nextDepartureEstimatedTs = None
-        state = None
 
         for departure in departures:
             schedule_metadata = departure.get("scheduleMetadata", {})
@@ -350,14 +349,17 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if len(next_trains) >= max_trains:
                 break
 
-        err_state = await self._enrich_journey_data(enrichment, origin, destination)
-        if err_state:
-            state = err_state
-        elif nextDepartureEstimatedTs is not None:
+        # Enrichment failures no longer replace the numeric state; they are
+        # surfaced separately so the sensor stays usable in automations.
+        error = await self._enrich_journey_data(enrichment, origin, destination)
+
+        state = None
+        if nextDepartureEstimatedTs is not None:
             state = _delta_seconds(nextDepartureEstimatedTs, now) // 60
 
         return query_key, {
             "state": state,
+            "error": error,
             "next_trains": next_trains,
             "journey_start": origin,
             "journey_end": destination,

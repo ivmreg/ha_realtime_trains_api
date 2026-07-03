@@ -132,7 +132,6 @@ async def test_coordinator_custom_lookback():
 from datetime import timedelta, datetime, time
 from unittest.mock import patch, MagicMock
 import pytest
-import pytz
 from custom_components.realtime_trains_api.coordinator import TIMEZONE
 
 @pytest.mark.asyncio
@@ -314,3 +313,25 @@ async def test_stale_data_served_on_rate_limit():
     assert stale is good_data
     assert coordinator.data_stale is True
     assert coordinator.last_successful_update is not None
+
+
+@pytest.mark.asyncio
+async def test_enrichment_error_keeps_state_numeric():
+    """Journey-data failures surface via the error field, not the state."""
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={"services": [_service("S1")]})
+    api.fetch_service_details = AsyncMock(
+        side_effect=RealtimeTrainsApiRateLimitError("Rate limit", retry_after=60)
+    )
+
+    coordinator = _make_coordinator(
+        api,
+        [{"origin": "WAL", "destination": "WAT", "journey_data_for_next_X_trains": 1, "max_trains": 5}],
+    )
+
+    with freeze_time("2026-04-07 12:00:00"):
+        data = await coordinator._async_update_data()
+
+    result = data["WAL_WAT_all_0"]
+    assert result["state"] == 5
+    assert result["error"] == "Rate Limited"

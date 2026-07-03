@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import logging
-import pytz
+from zoneinfo import ZoneInfo
 
 import voluptuous as vol
 from typing import Any, cast
@@ -65,8 +65,9 @@ ATTR_CURRENT_POLLING_INTERVAL = "current_polling_interval"
 ATTR_NEXT_UPDATE_AT = "next_update_at"
 ATTR_DATA_STALE = "data_stale"
 ATTR_LAST_SUCCESSFUL_UPDATE = "last_successful_update"
+ATTR_ERROR = "error"
 
-TIMEZONE = pytz.timezone('Europe/London')
+TIMEZONE = ZoneInfo('Europe/London')
 STRFFORMAT = "%d-%m-%Y %H:%M"
 
 _QUERY_SCHEME = vol.Schema(
@@ -355,6 +356,8 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
                 
             if data.get("platforms_of_interest"):
                 attrs[ATTR_PLATFORMS_OF_INTEREST] = list(data["platforms_of_interest"])
+
+            attrs[ATTR_ERROR] = data.get("error")
                 
         attrs[ATTR_CURRENT_POLLING_INTERVAL] = self.coordinator.current_polling_interval
         if getattr(self.coordinator, "last_update_time", None):

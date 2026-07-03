@@ -10,7 +10,7 @@ Key features include:
 - Destination filtering.
 - A Home Assistant blueprint (`blueprint.yaml`) for tracking scheduled trains and notifying on delays, cancellations, or platform changes.
 
-The main codebase is located in `custom_components/realtime_trains_api/`. The project also contains an OpenAPI specification for the Realtime Trains API in `main.yml`.
+The main codebase is located in `custom_components/realtime_trains_api/`. The project also contains an OpenAPI specification for the Realtime Trains API in `docs/rtt-openapi.yaml`.
 
 ## Building and Running
 
