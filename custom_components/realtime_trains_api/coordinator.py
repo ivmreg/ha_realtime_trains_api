@@ -17,6 +17,7 @@ from .const import (
     CONF_TIMEOFFSET,
     CONF_PLATFORMS_OF_INTEREST,
     CONF_LOOKBACK,
+    CONF_PINNED_DEPARTURE,
     DEFAULT_LOOKBACK_MINUTES,
     DEFAULT_MAX_TRAINS,
     NO_TRAINS_BACKOFF_SECONDS,
@@ -357,10 +358,20 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if nextDepartureEstimatedTs is not None:
             state = _delta_seconds(nextDepartureEstimatedTs, now) // 60
 
+        pinned_train = None
+        pinned_time = query.get(CONF_PINNED_DEPARTURE)
+        if pinned_time:
+            for train in next_trains:
+                if train["scheduled"].endswith(f" {pinned_time}"):
+                    train["is_pinned"] = True
+                    pinned_train = train
+                    break
+
         return query_key, {
             "state": state,
             "error": error,
             "next_trains": next_trains,
+            "pinned_train": pinned_train,
             "journey_start": origin,
             "journey_end": destination,
             "platforms_of_interest": platforms_of_interest,

@@ -32,7 +32,9 @@ from .const import (
     DOMAIN,
     CONF_LOOKBACK,
     CONF_MAXTRAINS,
+    CONF_PINNED_DEPARTURE,
     DEFAULT_LOOKBACK_MINUTES,
+    HHMM_PATTERN,
 )
 from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
 from .rtt_api import RealtimeTrainsApiClient, RealtimeTrainsApiAuthError
@@ -78,6 +80,7 @@ def _query_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Optional(CONF_LOOKBACK, default=defaults.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES)): vol.All(
                 vol.Coerce(int), vol.Range(min=0, max=1440)
             ),
+            vol.Optional(CONF_PINNED_DEPARTURE, default=defaults.get(CONF_PINNED_DEPARTURE, "")): cv.string,
             vol.Optional(FIELD_ADD_ANOTHER, default=False): bool,
         }
     )
@@ -106,6 +109,11 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
 
     journey_data = coerce_positive_int(user_input.get(CONF_JOURNEYDATA, 0))
     max_trains = coerce_positive_int(user_input.get(CONF_MAXTRAINS, 0)) or None
+
+    pinned_raw = user_input.get(CONF_PINNED_DEPARTURE)
+    pinned = str(pinned_raw).strip() if pinned_raw else None
+    if pinned and not HHMM_PATTERN.match(pinned):
+        errors[CONF_PINNED_DEPARTURE] = "invalid_pinned_time"
     time_offset = coerce_positive_int(user_input.get(FIELD_TIME_OFFSET, 0))
     platforms = split_csv(user_input.get(FIELD_PLATFORMS, ""))
     lookback = coerce_positive_int(user_input.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES))
@@ -121,6 +129,7 @@ def _convert_query_input(user_input: dict[str, Any]) -> tuple[dict[str, Any], bo
         CONF_TIMEOFFSET: time_offset,
         CONF_PLATFORMS_OF_INTEREST: platforms,
         CONF_LOOKBACK: lookback,
+        CONF_PINNED_DEPARTURE: pinned,
     }
 
     return query, add_another, errors
@@ -138,6 +147,7 @@ def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
         CONF_END: (raw_query.get(CONF_END) or ""),
         CONF_JOURNEYDATA: raw_query.get(CONF_JOURNEYDATA, 0),
         CONF_MAXTRAINS: raw_query.get(CONF_MAXTRAINS) or 0,
+        CONF_PINNED_DEPARTURE: raw_query.get(CONF_PINNED_DEPARTURE) or "",
         FIELD_TIME_OFFSET: minutes,
         FIELD_PLATFORMS: ", ".join(platforms),
         CONF_LOOKBACK: raw_query.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES),

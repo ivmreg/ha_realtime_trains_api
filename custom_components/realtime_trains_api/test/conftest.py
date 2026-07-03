@@ -63,6 +63,7 @@ update_coordinator = _install_module("homeassistant.helpers.update_coordinator")
 device_registry = _install_module("homeassistant.helpers.device_registry")
 components = _install_module("homeassistant.components", package=True)
 sensor = _install_module("homeassistant.components.sensor")
+binary_sensor = _install_module("homeassistant.components.binary_sensor")
 diagnostics = _install_module("homeassistant.components.diagnostics")
 const = _install_module("homeassistant.const")
 data_entry_flow = _install_module("homeassistant.data_entry_flow")
@@ -88,7 +89,13 @@ update_coordinator.DataUpdateCoordinator = type("DataUpdateCoordinator", (object
     "__init__": lambda self, *args, **kwargs: None,
     "async_config_entry_first_refresh": _fake_first_refresh
 })
-update_coordinator.CoordinatorEntity = type("CoordinatorEntity", (object,), {"__init__": lambda self, coordinator: None})
+def _coordinator_entity_init(self, coordinator):
+    self.coordinator = coordinator
+
+
+update_coordinator.CoordinatorEntity = type(
+    "CoordinatorEntity", (object,), {"__init__": _coordinator_entity_init}
+)
 device_registry.DeviceInfo = type("DeviceInfo", (dict,), {})
 device_registry.DeviceEntryType = type("DeviceEntryType", (object,), {"SERVICE": "service"})
 diagnostics.async_redact_data = MagicMock(name="async_redact_data", side_effect=lambda data, to_redact: {k: "**REDACTED**" if k in to_redact else v for k, v in data.items()} if data else data)
@@ -156,6 +163,9 @@ entity_platform.AddEntitiesCallback = MagicMock(name="AddEntitiesCallback")
 
 sensor.PLATFORM_SCHEMA = MagicMock(name="PLATFORM_SCHEMA")
 sensor.SensorEntity = type("SensorEntity", (object,), {})
+
+binary_sensor.BinarySensorEntity = type("BinarySensorEntity", (object,), {})
+binary_sensor.BinarySensorDeviceClass = types.SimpleNamespace(PROBLEM="problem")
 
 const.UnitOfTime = types.SimpleNamespace(MINUTES="min")
 

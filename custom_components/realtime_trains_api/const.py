@@ -2,7 +2,7 @@ import re
 from datetime import timedelta
 
 DOMAIN = "realtime_trains_api"
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "binary_sensor"]
 
 CONF_API_TOKEN = "token"
 CONF_REFRESH_TOKEN = "refresh_token"
@@ -17,8 +17,13 @@ CONF_SENSORNAME = "sensor_name"
 CONF_TIMEOFFSET = "time_offset"
 CONF_PLATFORMS_OF_INTEREST = "platforms_of_interest"
 CONF_LOOKBACK = "lookback_minutes"
+CONF_PINNED_DEPARTURE = "pinned_departure_time"
 
 CRS_CODE_PATTERN = re.compile(r"^[A-Z]{3}$")
+HHMM_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+# A pinned train counts as disrupted from this many minutes of delay
+PINNED_DELAY_THRESHOLD_MINUTES = 5
 
 CONF_PEAK_INTERVAL = "peak_interval"
 CONF_OFF_PEAK_INTERVAL = "off_peak_interval"

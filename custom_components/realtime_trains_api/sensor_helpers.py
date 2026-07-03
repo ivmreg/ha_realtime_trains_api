@@ -166,6 +166,30 @@ def collect_subsequent_stops(
     return subsequent_stops
 
 
+def evaluate_pinned_disruption(
+    train: Mapping[str, Any] | None,
+    threshold_minutes: int,
+) -> tuple[bool, str | None]:
+    """Judge whether a pinned train is disrupted; returns (disrupted, reason)."""
+    if train is None:
+        return False, None
+
+    if train.get("is_cancelled") or train.get("status") == "Cancelled":
+        return True, "Cancelled"
+
+    try:
+        scheduled = datetime.strptime(train["scheduled"], RTT_TIME_FORMAT)
+        estimated = datetime.strptime(train["estimated"], RTT_TIME_FORMAT)
+    except (KeyError, TypeError, ValueError):
+        return False, None
+
+    delay_minutes = (estimated - scheduled).total_seconds() / 60
+    if delay_minutes >= threshold_minutes:
+        return True, f"Delayed {int(delay_minutes)} min"
+
+    return False, None
+
+
 async def retry_with_auth_refresh(
     fetch: Callable[[], Awaitable[T]],
     refresh: Callable[[], Awaitable[bool]],

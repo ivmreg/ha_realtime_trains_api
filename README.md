@@ -75,6 +75,24 @@ This is useful for:
 - Tracking trains from a specific platform at your local station
 - Planning journeys when you have multiple destination options
 
+### Pin "your" train
+
+Add `pinned_departure_time: "07:42"` (the scheduled HH:MM departure) to a query
+to pin a recurring service you actually care about:
+
+- The matching entry in `next_trains` gains `is_pinned: true`, and the sensor
+  exposes it directly as a `pinned_train` attribute.
+- A `binary_sensor` ("Your 07:42 from DFD to CST disrupted", device class
+  *problem*) turns on when that train is cancelled or running 5+ minutes
+  late — trigger your "leave earlier" automation from it directly, no
+  templating needed.
+
+This supersedes the `blueprint.yaml` + `rest_command` approach for the common
+"tell me if my usual train is disrupted" case: no extra secrets, and it reuses
+the integration's own authenticated, rate-limit-aware client. The blueprint
+remains for advanced cases (e.g. tracking a service the sensor's station pair
+doesn't cover).
+
 ### Resilience & freshness attributes
 
 Each sensor exposes attributes a dashboard can use to judge how fresh the data is:

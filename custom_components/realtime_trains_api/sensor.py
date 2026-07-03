@@ -10,7 +10,7 @@ from typing import Any, cast
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTime, CONF_SCAN_INTERVAL
+from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
@@ -40,7 +40,9 @@ from .const import (
     DEFAULT_PEAK_WINDOWS,
     CONF_LOOKBACK,
     CONF_MAXTRAINS,
+    CONF_PINNED_DEPARTURE,
     DEFAULT_LOOKBACK_MINUTES,
+    HHMM_PATTERN,
 )
 from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
 from .sensor_helpers import (
@@ -66,6 +68,7 @@ ATTR_NEXT_UPDATE_AT = "next_update_at"
 ATTR_DATA_STALE = "data_stale"
 ATTR_LAST_SUCCESSFUL_UPDATE = "last_successful_update"
 ATTR_ERROR = "error"
+ATTR_PINNED_TRAIN = "pinned_train"
 
 TIMEZONE = ZoneInfo('Europe/London')
 STRFFORMAT = "%d-%m-%Y %H:%M"
@@ -81,6 +84,7 @@ _QUERY_SCHEME = vol.Schema(
         vol.Optional(CONF_PLATFORMS_OF_INTEREST): [cv.string],
         vol.Optional(CONF_LOOKBACK, default=DEFAULT_LOOKBACK_MINUTES): cv.positive_int,
         vol.Optional(CONF_MAXTRAINS): cv.positive_int,
+        vol.Optional(CONF_PINNED_DEPARTURE): cv.string,
     }
 )
 
@@ -122,6 +126,11 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
     lookback = coerce_positive_int(raw_query.get(CONF_LOOKBACK, DEFAULT_LOOKBACK_MINUTES))
     max_trains = coerce_positive_int(raw_query.get(CONF_MAXTRAINS, 0)) or None
 
+    pinned_raw = raw_query.get(CONF_PINNED_DEPARTURE)
+    pinned = str(pinned_raw).strip() if pinned_raw else None
+    if pinned and not HHMM_PATTERN.match(pinned):
+        raise ValueError(f"Invalid pinned departure time (expected HH:MM): {pinned}")
+
     return {
         CONF_SENSORNAME: sensor_name,
         CONF_START: origin,
@@ -131,6 +140,7 @@ def _normalize_query(raw_query: Any) -> dict[str, Any]:
         CONF_PLATFORMS_OF_INTEREST: platforms,
         CONF_LOOKBACK: lookback,
         CONF_MAXTRAINS: max_trains,
+        CONF_PINNED_DEPARTURE: pinned,
     }
 
 
@@ -358,6 +368,8 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
                 attrs[ATTR_PLATFORMS_OF_INTEREST] = list(data["platforms_of_interest"])
 
             attrs[ATTR_ERROR] = data.get("error")
+            if data.get("pinned_train") is not None:
+                attrs[ATTR_PINNED_TRAIN] = data["pinned_train"]
                 
         attrs[ATTR_CURRENT_POLLING_INTERVAL] = self.coordinator.current_polling_interval
         if getattr(self.coordinator, "last_update_time", None):
