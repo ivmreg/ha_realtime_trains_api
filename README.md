@@ -96,7 +96,7 @@ The integration implements Home Assistant config-entry diagnostics: on the integ
 sensor:
   - platform: realtime_trains_api
     token: '[Your RTT API Token]' # recommended to use '!secret my_rtt_token' and add to secrets.yaml
-    auto_adjust_scans: true # If no depatures are retrieved, back off polling interval to 30 mins (until there are some trains)
+    auto_adjust_scans: true # If no departures are retrieved, back off polling interval to 30 mins (until there are some trains)
     queries:
       - origin: WAL
         destination: WAT
