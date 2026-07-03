@@ -14,10 +14,14 @@ only.
 
 ## Commands
 
-- `pytest custom_components/realtime_trains_api/test` — full test suite.
-  `test/conftest.py` stubs the entire `homeassistant` (and `aiohttp`) module
-  tree, so tests run without Home Assistant installed. Test deps:
-  `pytest freezegun pytz voluptuous` (see `requirements-test.txt`).
+- `pytest custom_components/realtime_trains_api/test` — main (stub-based)
+  suite. `test/conftest.py` stubs the entire `homeassistant` (and `aiohttp`)
+  module tree, so tests run without Home Assistant installed. Test deps in
+  `requirements-test.txt`.
+- `pytest tests_ha` — real-HA smoke test via
+  `pytest-homeassistant-custom-component` (`requirements-test-ha.txt`);
+  needs Python ≤3.13 and runs as its own CI job. Kept outside the stub
+  conftest's directory on purpose.
 - No build step; HACS ships the directory as-is.
 
 ## Architecture

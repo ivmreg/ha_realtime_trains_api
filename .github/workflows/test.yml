@@ -26,3 +26,23 @@ jobs:
 
       - name: Run tests
         run: pytest custom_components/realtime_trains_api/test -q
+
+  pytest-real-ha:
+    # The stub-based suite above can't catch drift in HA's real APIs; this
+    # job sets up a genuine config entry inside an actual Home Assistant.
+    name: pytest (real Home Assistant)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Home Assistant test harness
+        run: pip install -r requirements-test-ha.txt
+
+      - name: Run smoke tests
+        run: pytest tests_ha -q
