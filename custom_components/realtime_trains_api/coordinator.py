@@ -105,7 +105,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     scheduled_departure,
                 ),
                 self._async_refresh_token,
-                lambda err: _LOGGER.warning("Could not populate arrival times after retry: %s", err),
+                lambda err: _LOGGER.debug("Could not populate arrival times after retry: %s", err),
             )
         except RealtimeTrainsApiAuthError:
             return "Credentials invalid"
@@ -113,10 +113,10 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug("Rate limit hit or preemptively skipped for journey data: %s", err)
             return "Rate Limited"
         except RealtimeTrainsApiNotFoundError:
-            _LOGGER.warning("Could not find %s in stops for service %s.", journey_end, train['service_uid'])
+            _LOGGER.debug("Could not find %s in stops for service %s.", journey_end, train['service_uid'])
             return None
         except RealtimeTrainsApiError as err:
-            _LOGGER.warning("Could not populate arrival times: %s", err)
+            _LOGGER.debug("Could not populate arrival times: %s", err)
             return None
 
         if data is None:
@@ -179,7 +179,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         train["subsequent_stops"] = subsequent_stops
 
         if journey_end and not found_dest:
-            _LOGGER.warning("Could not find %s in stops for service %s.", journey_end, train['service_uid'])
+            _LOGGER.debug("Could not find %s in stops for service %s.", journey_end, train['service_uid'])
 
         if not journey_end:
             train["stops"] = stopCount

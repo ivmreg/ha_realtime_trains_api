@@ -70,7 +70,6 @@ class RealtimeTrainsApiClient:
                 _LOGGER.debug("Token refresh response status: %s", response.status)
                 if response.status == 200:
                     json_data = await response.json()
-                    _LOGGER.debug("Token refresh response body: %s", json_data)
                     new_token = json_data.get("token")
                     if not new_token:
                         _LOGGER.error("Token refresh response missing 'token' key")
@@ -81,7 +80,7 @@ class RealtimeTrainsApiClient:
                     return new_token
                 
                 body = await response.text()
-                _LOGGER.error("Failed to refresh token: %s. Response: %s", response.status, body)
+                _LOGGER.error("Failed to refresh token: %s. Response: %s", response.status, body[:200])
                 raise RealtimeTrainsApiAuthError(f"Failed to refresh token: {response.status}")
         except Exception as err:
             if not isinstance(err, RealtimeTrainsApiAuthError):
@@ -145,10 +144,8 @@ class RealtimeTrainsApiClient:
             )
             
 
-        # Create headers copy for logging (mask Authorization)
-        log_headers = {k: (v if k.lower() != "authorization" else "Bearer ***") for k, v in self._headers.items()}
-        _LOGGER.debug("RTT API Request: GET %s, Headers: %s", url, log_headers)
-        
+        _LOGGER.debug("RTT API Request: GET %s", url)
+
         try:
             async with self._session.get(url, headers=self._headers) as response:
                 _LOGGER.debug("RTT API Response Status: %s for %s", response.status, url)
@@ -169,9 +166,7 @@ class RealtimeTrainsApiClient:
                             pass
 
                 if response.status == 200:
-                    json_data = await response.json()
-                    _LOGGER.debug("RTT API Response Body (JSON): %s", json_data)
-                    return json_data
+                    return await response.json()
                 
                 if response.status == 429:
                     retry_after = response.headers.get("Retry-After")
@@ -189,7 +184,7 @@ class RealtimeTrainsApiClient:
                     raise RealtimeTrainsApiNotFoundError(f"Endpoint returned 404 for path {path}") from None
                 
                 body = await response.text()
-                _LOGGER.error("RTT API Unexpected response %s for %s: %s", response.status, url, body)
+                _LOGGER.error("RTT API Unexpected response %s for %s: %s", response.status, url, body[:200])
                 raise RealtimeTrainsApiError(f"Unexpected status {response.status}")
         except Exception as err:
             if not isinstance(err, (RealtimeTrainsApiError)):
