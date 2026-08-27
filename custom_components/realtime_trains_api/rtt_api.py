@@ -53,13 +53,9 @@ class RealtimeTrainsApiClient:
     async def async_get_access_token(self) -> str:
         """Fetch a new access token using the refresh token."""
         if not self._refresh_token:
-            _LOGGER.debug("Access token refresh requested but no refresh token available")
             raise RealtimeTrainsApiAuthError("No refresh token available")
 
         url = f"{API_BASE}api/get_access_token"
-        masked_refresh = f"{self._refresh_token[:5]}...{self._refresh_token[-5:]}" if len(self._refresh_token) > 10 else "***"
-        _LOGGER.debug("Requesting new access token from %s using refresh token %s", url, masked_refresh)
-        
         headers = {
             "Authorization": f"Bearer {self._refresh_token}",
             "accept": "application/json",
@@ -67,7 +63,6 @@ class RealtimeTrainsApiClient:
         
         try:
             async with self._session.get(url, headers=headers) as response:
-                _LOGGER.debug("Token refresh response status: %s", response.status)
                 if response.status == 200:
                     json_data = await response.json()
                     new_token = json_data.get("token")
@@ -76,7 +71,6 @@ class RealtimeTrainsApiClient:
                         raise RealtimeTrainsApiAuthError("Response missing token")
                     self._token = new_token
                     self._headers["Authorization"] = f"Bearer {new_token}"
-                    _LOGGER.debug("Successfully refreshed RTT access token")
                     return new_token
                 
                 body = await response.text()
@@ -144,12 +138,8 @@ class RealtimeTrainsApiClient:
             )
             
 
-        _LOGGER.debug("RTT API Request: GET %s", url)
-
         try:
             async with self._session.get(url, headers=self._headers) as response:
-                _LOGGER.debug("RTT API Response Status: %s for %s", response.status, url)
-                
                 # Parse Rate Limit Headers
                 for dim in ["Minute", "Hour", "Day", "Week"]:
                     limit_header = response.headers.get(f"X-RateLimit-Limit-{dim}")
@@ -172,21 +162,25 @@ class RealtimeTrainsApiClient:
                     retry_after = response.headers.get("Retry-After")
                     retry_after_int = int(retry_after) if retry_after and retry_after.isdigit() else 60
                     self._retry_after_timestamp = time.time() + retry_after_int
-                    _LOGGER.warning("RTT API Rate Limit Hit (429) for %s. Retry-After: %s", url, retry_after)
+                    _LOGGER.warning(
+                        "RTT API rate limit reached; retrying after %s seconds",
+                        retry_after_int,
+                    )
                     raise RealtimeTrainsApiRateLimitError(f"Too many requests", retry_after=retry_after_int)
 
                 if response.status in (401, 403):
-                    _LOGGER.warning("RTT API Authentication error (401/403) for %s", url)
+                    # An expired access token is expected periodically. The
+                    # coordinator refreshes it and retries once, and reports an
+                    # authentication failure only if recovery does not work.
                     raise RealtimeTrainsApiAuthError("Credentials invalid") from None
                 
                 if response.status == 404:
-                    _LOGGER.debug("RTT API Resource not found (404) for %s", url)
                     raise RealtimeTrainsApiNotFoundError(f"Endpoint returned 404 for path {path}") from None
                 
                 body = await response.text()
-                _LOGGER.error("RTT API Unexpected response %s for %s: %s", response.status, url, body[:200])
+                _LOGGER.error("RTT API returned unexpected status %s: %s", response.status, body[:200])
                 raise RealtimeTrainsApiError(f"Unexpected status {response.status}")
         except Exception as err:
             if not isinstance(err, (RealtimeTrainsApiError)):
-                _LOGGER.error("RTT API Connection error for %s: %s", url, err)
+                _LOGGER.error("RTT API connection error: %s", err)
             raise

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime
 from pathlib import Path
 
@@ -99,14 +100,74 @@ async def test_fetch_location_services_requires_date_with_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_location_services_auth_error() -> None:
+async def test_fetch_location_services_auth_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     session = MockSession()
     url = f"{API_BASE}gb-nr/location?code=BKH&filterTo=CST"
     session.queue_response(url, MockResponse(403))
     client = RealtimeTrainsApiClient(session, "token123")
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.realtime_trains_api.rtt_api",
+    )
 
     with pytest.raises(RealtimeTrainsApiAuthError):
         await client.fetch_location_services("BKH", "CST")
+
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "custom_components.realtime_trains_api.rtt_api"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_successful_request_does_not_log_each_call(
+    sample_departures: dict,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = MockSession()
+    url = f"{API_BASE}gb-nr/location?code=BKH&filterTo=CST"
+    session.queue_response(url, MockResponse(200, json_data=sample_departures))
+    client = RealtimeTrainsApiClient(session, "token123")
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.realtime_trains_api.rtt_api",
+    )
+
+    await client.fetch_location_services("BKH", "CST")
+
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "custom_components.realtime_trains_api.rtt_api"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_access_token_refresh_does_not_log_credentials(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = MockSession()
+    url = f"{API_BASE}api/get_access_token"
+    session.queue_response(url, MockResponse(200, json_data={"token": "new-token"}))
+    client = RealtimeTrainsApiClient(
+        session,
+        "expired-token",
+        refresh_token="private-refresh-token",
+    )
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.realtime_trains_api.rtt_api",
+    )
+
+    assert await client.async_get_access_token() == "new-token"
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "custom_components.realtime_trains_api.rtt_api"
+    ]
 
 
 @pytest.mark.asyncio
