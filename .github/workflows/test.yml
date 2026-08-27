@@ -25,7 +25,7 @@ jobs:
         run: pip install -r requirements-test.txt
 
       - name: Run tests
-        run: pytest custom_components/realtime_trains_api/test -q
+        run: python -m pytest custom_components/realtime_trains_api/test -q
 
   pytest-real-ha:
     # The stub-based suite above can't catch drift in HA's real APIs; this
@@ -45,4 +45,4 @@ jobs:
         run: pip install -r requirements-test-ha.txt
 
       - name: Run smoke tests
-        run: pytest tests_ha -q
+        run: python -m pytest tests_ha -q

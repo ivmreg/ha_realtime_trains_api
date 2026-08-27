@@ -56,6 +56,7 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
+@pytest.mark.asyncio
 async def test_config_entry_sets_up_sensors(
     hass: HomeAssistant, aioclient_mock
 ) -> None:
