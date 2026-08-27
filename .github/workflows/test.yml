@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+env:
+  PYTHONPATH: "."
+
 jobs:
   pytest:
     name: pytest
