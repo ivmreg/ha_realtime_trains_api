@@ -4,6 +4,5 @@
     "country": [
         "GB"
     ],
-    "homeassistant": "2023.1.0",
-    "issue_tracker": "https://github.com/ivmreg/ha_realtime_trains_api/issues"
+    "homeassistant": "2023.1.0"
 }
