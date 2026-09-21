@@ -1,11 +1,16 @@
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from freezegun import freeze_time
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from custom_components.realtime_trains_api.coordinator import RealtimeTrainsUpdateCoordinator
+from custom_components.realtime_trains_api.coordinator import (
+    RealtimeTrainsUpdateCoordinator,
+    TIMEZONE,
+)
 from custom_components.realtime_trains_api.rtt_api import (
     RealtimeTrainsApiAuthError,
     RealtimeTrainsApiRateLimitError,
@@ -35,23 +40,48 @@ async def test_coordinator_auth_error():
 async def test_coordinator_rate_limit_error():
     hass = MagicMock()
     api = MagicMock()
-    api.fetch_location_services = AsyncMock(side_effect=RealtimeTrainsApiRateLimitError("Rate limit", retry_after=60))
+    api.fetch_location_services = AsyncMock(side_effect=RealtimeTrainsApiRateLimitError("Rate limit", retry_after=120))
     api.async_get_access_token = AsyncMock()
     
     coordinator = RealtimeTrainsUpdateCoordinator(
         hass=hass,
         logger=MagicMock(),
         name="test",
-        update_interval=timedelta(minutes=1),
+        update_interval=timedelta(seconds=30),
         api=api,
         queries=[{"origin": "WAL", "destination": "WAT"}]
     )
+    coordinator.current_polling_interval = 30
     
     with pytest.raises(UpdateFailed):
         await coordinator._async_update_data()
 
-from freezegun import freeze_time
-from datetime import datetime, date
+    assert coordinator.current_polling_interval == 120
+    assert coordinator.update_interval == timedelta(seconds=120)
+
+@pytest.mark.asyncio
+async def test_coordinator_rate_limit_error_fallback_and_stale_data():
+    hass = MagicMock()
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(side_effect=RealtimeTrainsApiRateLimitError("Rate limit", retry_after=None))
+    api.async_get_access_token = AsyncMock()
+
+    coordinator = RealtimeTrainsUpdateCoordinator(
+        hass=hass,
+        logger=MagicMock(),
+        name="test",
+        update_interval=timedelta(seconds=20),
+        api=api,
+        queries=[{"origin": "WAL", "destination": "WAT"}]
+    )
+    coordinator.current_polling_interval = 20
+    coordinator.data = {"WAL_WAT_all_0": {"next_trains": []}}
+
+    data = await coordinator._async_update_data()
+    assert data == {"WAL_WAT_all_0": {"next_trains": []}}
+    assert coordinator.data_stale is True
+    assert coordinator.current_polling_interval == 60
+    assert coordinator.update_interval == timedelta(seconds=60)
 
 @pytest.mark.asyncio
 async def test_coordinator_fetches_and_structures_data():
@@ -93,6 +123,10 @@ async def test_coordinator_fetches_and_structures_data():
         
     assert "WAL_WAT_all_0" in data
     assert len(data["WAL_WAT_all_0"]["next_trains"]) == 1
+    train = data["WAL_WAT_all_0"]["next_trains"][0]
+    assert "scheduled_iso" in train
+    assert "estimated_iso" in train
+    assert train["scheduled_iso"].startswith("2026-04-07T12:05:00")
     api.fetch_location_services.assert_called_once_with(
         "WAL",
         "WAT",
@@ -129,21 +163,12 @@ async def test_coordinator_custom_lookback():
         time_window=150,
     )
 
-from datetime import timedelta, datetime, time
-from unittest.mock import patch, MagicMock
-import pytest
-from custom_components.realtime_trains_api.coordinator import TIMEZONE
-
 @pytest.mark.asyncio
 async def test_coordinator_dynamic_interval():
     hass = MagicMock()
     logger = MagicMock()
-    from unittest.mock import AsyncMock
     api = MagicMock()
     api.fetch_location_services = AsyncMock(return_value={"services": []})
-    
-    # We import here to get the patched class
-    from custom_components.realtime_trains_api.coordinator import RealtimeTrainsUpdateCoordinator
     
     coordinator = RealtimeTrainsUpdateCoordinator(
         hass, logger, "test", timedelta(seconds=60), api, [{}]

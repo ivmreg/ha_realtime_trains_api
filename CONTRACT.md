@@ -19,7 +19,7 @@ time) unless noted as ISO 8601.
 |---|---|---|
 | `journey_start` | string | Origin CRS code |
 | `journey_end` | string | Destination CRS code; absent for station-wide queries |
-| `next_trains` | list | See per-train fields below; may be absent when empty |
+| `next_trains` | list | See per-train fields below; always present, empty list when no departures exist |
 | `platforms_of_interest` | list[string] | Only when a platform filter is set |
 | `pinned_train` | object | The matching pinned train (same shape as a `next_trains` entry); only when `pinned_departure_time` is configured and matched |
 | `current_polling_interval` | int | Seconds |
@@ -40,7 +40,8 @@ or unknown when there are none.
 | `headcode` | string | Train reporting identity, e.g. `2A69` |
 | `type` | string | RTT mode type, e.g. `TRAIN` |
 | `operator_name` | string | Operating company; also scopes the card's stock styling |
-| `scheduled`, `estimated` | datetime string | Departure times |
+| `scheduled`, `estimated` | datetime string | Departure times (`DD-MM-YYYY HH:MM`) |
+| `scheduled_iso`, `estimated_iso` | ISO datetime string | Departure times formatted ISO-8601 with explicit Europe/London UTC offset (e.g. `2025-11-15T21:51:00+00:00`) |
 | `minutes` | number | Minutes until estimated departure at fetch time |
 | `lateness` | number or null | RTT advertised lateness |
 | `is_cancelled` | bool | Cancellation flag |
@@ -52,15 +53,17 @@ or unknown when there are none.
 
 | Field | Type | Notes |
 |---|---|---|
-| `scheduled_arrival`, `estimate_arrival` | datetime string | At the query's destination |
+| `scheduled_arrival`, `estimate_arrival` | datetime string | At the query's destination (`DD-MM-YYYY HH:MM`) |
+| `scheduled_arrival_iso`, `estimate_arrival_iso` | ISO datetime string | Destination arrival times formatted ISO-8601 with explicit Europe/London UTC offset |
 | `journey_time_mins` | number | Estimated arrival minus estimated departure |
 | `stops` | number | Location count for the service |
 | `status` | string | `OK` \| `Delayed` \| `Cancelled` — arrival status at the destination |
 | `reason` | string | Disruption reason short text, when RTT provides one |
-| `subsequent_stops` | list | `{stop, name, scheduled, estimated}` — upcoming calling points |
+| `subsequent_stops` | list | `{stop, name, scheduled, estimated, scheduled_iso, estimated_iso}` — upcoming calling points |
 | `last_report_station` | string | CRS of the last actual report |
 | `last_report_type` | string | `Arrival` \| `Departure` \| `Pass` |
-| `last_report_time` | datetime string | Time of that report |
+| `last_report_time` | datetime string | Time of that report (`DD-MM-YYYY HH:MM`) |
+| `last_report_time_iso` | ISO datetime string | Time of that report formatted ISO-8601 with explicit Europe/London UTC offset |
 
 ## Per-train fields (pinning)
 

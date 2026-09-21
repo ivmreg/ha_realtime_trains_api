@@ -168,6 +168,8 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         train.update({
                             "scheduled_arrival": sch_arr_dt.strftime(STRFFORMAT),
                             "estimate_arrival": est_arr_dt.strftime(STRFFORMAT),
+                            "scheduled_arrival_iso": sch_arr_dt.isoformat(),
+                            "estimate_arrival_iso": est_arr_dt.isoformat(),
                             "journey_time_mins": _delta_seconds(est_arr_dt, estimated_departure) // 60,
                             "stops": stopCount,
                             "status": status,
@@ -188,6 +190,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             train["last_report_station"] = last_report_station
             train["last_report_type"] = last_report_type
             train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
+            train["last_report_time_iso"] = last_report_time.isoformat() if last_report_time else None
         return None
 
     def _is_peak(self, now: datetime) -> bool:
@@ -257,6 +260,8 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "operator_name": schedule_metadata.get("operator", {}).get("name", ""),
             "scheduled": scheduledTs.strftime(STRFFORMAT),
             "estimated": estimatedTs.strftime(STRFFORMAT),
+            "scheduled_iso": scheduledTs.isoformat(),
+            "estimated_iso": estimatedTs.isoformat(),
             "minutes": _delta_seconds(estimatedTs, now) // 60,
             "lateness": temporal_data.get("realtimeAdvertisedLateness"),
             "is_cancelled": temporal_data.get("isCancelled", False),
@@ -422,6 +427,8 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except RealtimeTrainsApiAuthError as err:
             raise ConfigEntryAuthFailed(err) from err
         except RealtimeTrainsApiRateLimitError as err:
+            backoff = err.retry_after if (err.retry_after is not None and err.retry_after > 0) else 60
+            self._set_polling_interval(max(self.current_polling_interval, backoff))
             stale = self._serve_stale_data(f"Rate limit hit: {err}")
             if stale is not None:
                 return stale

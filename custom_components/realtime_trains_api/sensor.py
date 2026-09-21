@@ -77,7 +77,7 @@ _QUERY_SCHEME = vol.Schema(
     {
         vol.Optional(CONF_SENSORNAME): cv.string,
         vol.Required(CONF_START): cv.string,
-        vol.Required(CONF_END): cv.string,
+        vol.Optional(CONF_END): cv.string,
         vol.Optional(CONF_JOURNEYDATA, default=0): cv.positive_int,
         vol.Optional(CONF_TIMEOFFSET, default=DEFAULT_TIMEOFFSET):
             vol.All(cv.time_period, cv.positive_timedelta),
@@ -298,6 +298,14 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
 
     _attr_icon = "mdi:train"
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _unrecorded_attributes = frozenset(
+        {
+            ATTR_NEXT_TRAINS,
+            ATTR_PINNED_TRAIN,
+            ATTR_NEXT_UPDATE_AT,
+            ATTR_LAST_SUCCESSFUL_UPDATE,
+        }
+    )
 
     def __init__(
         self,
@@ -360,9 +368,7 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
             if data.get("journey_end"):
                 attrs[ATTR_JOURNEY_END] = data.get("journey_end")
                 
-            next_trains = data.get("next_trains", [])
-            if next_trains:
-                attrs[ATTR_NEXT_TRAINS] = next_trains
+            attrs[ATTR_NEXT_TRAINS] = data.get("next_trains", [])
                 
             if data.get("platforms_of_interest"):
                 attrs[ATTR_PLATFORMS_OF_INTEREST] = list(data["platforms_of_interest"])

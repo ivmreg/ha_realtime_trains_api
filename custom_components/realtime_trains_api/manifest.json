@@ -1,6 +1,6 @@
 {
     "domain": "realtime_trains_api",
-    "name": "Realtime Trains API - X",
+    "name": "Realtime Trains API",
     "documentation": "https://github.com/ivmreg/ha_realtime_trains_api",
     "codeowners": [
         "@ivmreg"

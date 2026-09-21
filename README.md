@@ -159,22 +159,27 @@ This repository also includes a Home Assistant blueprint (`blueprint.yaml`) for 
 
 The blueprint requires configuring `rest_command` in your `configuration.yaml` to interact with the RTT v2 Token API.
 
-1. Add your raw RTT API token to `secrets.yaml`:
+1. Add your complete RTT refresh token authorization header to `secrets.yaml`:
 ```yaml
-rtt_token: "[Your RTT API Token]"
+rtt_refresh_token_header: "Bearer [Your RTT Refresh Token]"
 ```
 
 2. Add the following to your `configuration.yaml`:
 ```yaml
 rest_command:
+  rtt_get_token:
+    url: "https://data.rtt.io/api/get_access_token"
+    headers:
+      accept: "application/json"
+      Authorization: !secret rtt_refresh_token_header
   rtt_search:
     url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ '%02d' | format((time | int / 100) | int) }}:{{ '%02d' | format(time | int % 100) }}:00"
     headers:
-      Authorization: "Bearer !secret rtt_token"
+      Authorization: "Bearer {{ token }}"
   rtt_service:
     url: "https://data.rtt.io/gb-nr/service?identity={{ uid }}&departureDate={{ date }}"
     headers:
-      Authorization: "Bearer !secret rtt_token"
+      Authorization: "Bearer {{ token }}"
 ```
 
 3. Import the `blueprint.yaml` into your Home Assistant instance to create automations based on train schedules.

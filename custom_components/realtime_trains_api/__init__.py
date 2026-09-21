@@ -1,13 +1,16 @@
 """The realtime_trains_api component."""
 
 from __future__ import annotations
+
 from datetime import timedelta
+import logging
+from typing import Any
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
-import logging
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     DOMAIN,
     PLATFORMS,
@@ -24,7 +27,11 @@ from .const import (
 )
 from .rtt_api import RealtimeTrainsApiClient
 from .coordinator import RealtimeTrainsUpdateCoordinator
-from .normalization import parse_time_windows
+from .normalization import (
+    parse_time_windows,
+    scrub_legacy_title,
+    token_fingerprint,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,6 +81,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate old entry to version 2."""
+    _LOGGER.debug("Migrating Realtime Trains API entry from version %s", entry.version)
+
+    if entry.version > 2:
+        # Cannot downgrade from future version
+        return False
+
+    if entry.version == 1:
+        new_unique_id = entry.unique_id
+        refresh_token = entry.data.get(CONF_REFRESH_TOKEN)
+        if refresh_token:
+            new_unique_id = token_fingerprint(refresh_token)
+
+        new_title = scrub_legacy_title(entry.title)
+
+        update_kwargs: dict[str, Any] = {
+            "version": 2,
+            "unique_id": new_unique_id,
+        }
+        if new_title != entry.title:
+            update_kwargs["title"] = new_title
+
+        hass.config_entries.async_update_entry(
+            entry,
+            **update_kwargs,
+        )
+        _LOGGER.info("Migration to version 2 successful")
+
     return True
 
 

@@ -130,6 +130,8 @@ class RealtimeTrainPinnedDisruptionSensor(CoordinatorEntity, BinarySensorEntity)
                 {
                     "scheduled": train.get("scheduled"),
                     "estimated": train.get("estimated"),
+                    "scheduled_iso": train.get("scheduled_iso"),
+                    "estimated_iso": train.get("estimated_iso"),
                     "platform": train.get("platform"),
                     "is_cancelled": train.get("is_cancelled"),
                     "destination_name": train.get("destination_name"),

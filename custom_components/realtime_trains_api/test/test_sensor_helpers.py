@@ -253,17 +253,92 @@ def test_collect_subsequent_stops_uses_expected_time_source_and_filters() -> Non
             "name": "Alpha",
             "scheduled": "01-04-2026 10:00",
             "estimated": "01-04-2026 10:02",
+            "scheduled_iso": "2026-04-01T10:00:00+00:00",
+            "estimated_iso": "2026-04-01T10:02:00+00:00",
         },
         {
             "stop": "BBB",
             "name": "Beta",
             "scheduled": "01-04-2026 10:10",
             "estimated": "01-04-2026 10:12",
+            "scheduled_iso": "2026-04-01T10:10:00+00:00",
+            "estimated_iso": "2026-04-01T10:12:00+00:00",
         },
         {
             "stop": "DDD",
             "name": "Delta",
             "scheduled": "01-04-2026 10:30",
             "estimated": "01-04-2026 10:31",
+            "scheduled_iso": "2026-04-01T10:30:00+00:00",
+            "estimated_iso": "2026-04-01T10:31:00+00:00",
         },
     ]
+
+
+def test_query_scheme_and_normalization_origin_only():
+    from custom_components.realtime_trains_api.sensor import _QUERY_SCHEME, _normalize_query
+
+    # Origin-only query validates successfully without requiring destination
+    raw = {"origin": "BKH"}
+    validated = _QUERY_SCHEME(raw)
+    assert "destination" not in validated
+
+    normalized = _normalize_query({"origin": "BKH"})
+    assert normalized["origin"] == "BKH"
+    assert normalized["destination"] is None
+
+
+def test_sensor_unrecorded_attributes_and_empty_next_trains():
+    from unittest.mock import MagicMock
+    from datetime import timedelta
+    from custom_components.realtime_trains_api.sensor import (
+        RealtimeTrainLiveTrainTimeSensor,
+        ATTR_NEXT_TRAINS,
+        ATTR_PINNED_TRAIN,
+        ATTR_NEXT_UPDATE_AT,
+        ATTR_LAST_SUCCESSFUL_UPDATE,
+        ATTR_DATA_STALE,
+        ATTR_ERROR,
+    )
+
+    expected_unrecorded = frozenset(
+        {
+            ATTR_NEXT_TRAINS,
+            ATTR_PINNED_TRAIN,
+            ATTR_NEXT_UPDATE_AT,
+            ATTR_LAST_SUCCESSFUL_UPDATE,
+        }
+    )
+    assert RealtimeTrainLiveTrainTimeSensor._unrecorded_attributes == expected_unrecorded
+    assert ATTR_DATA_STALE not in RealtimeTrainLiveTrainTimeSensor._unrecorded_attributes
+    assert ATTR_ERROR not in RealtimeTrainLiveTrainTimeSensor._unrecorded_attributes
+
+    coordinator = MagicMock()
+    coordinator.data = {
+        "BKH_all_all_0_0": {
+            "journey_start": "BKH",
+            "journey_end": None,
+            "next_trains": [],
+            "error": None,
+            "pinned_train": None,
+        }
+    }
+    coordinator.current_polling_interval = 60
+    coordinator.last_update_time = None
+    coordinator.data_stale = False
+    coordinator.last_successful_update = None
+
+    sensor = RealtimeTrainLiveTrainTimeSensor(
+        coordinator=coordinator,
+        sensor_name=None,
+        query_key="BKH_all_all_0_0",
+        journey_start="BKH",
+        journey_end=None,
+        timeoffset=timedelta(),
+        platforms_of_interest=[],
+        entry_id="test_entry",
+        query_index=0,
+    )
+    attrs = sensor.extra_state_attributes
+    assert ATTR_NEXT_TRAINS in attrs
+    assert attrs[ATTR_NEXT_TRAINS] == []

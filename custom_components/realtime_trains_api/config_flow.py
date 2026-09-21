@@ -10,6 +10,7 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_API_TOKEN as RTT_CONF_API_TOKEN,
@@ -36,7 +37,15 @@ from .const import (
     DEFAULT_LOOKBACK_MINUTES,
     HHMM_PATTERN,
 )
-from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
+from .normalization import (
+    DEFAULT_TITLE,
+    coerce_positive_int,
+    coerce_time_offset,
+    parse_time_windows,
+    scrub_legacy_title,
+    split_csv,
+    token_fingerprint,
+)
 from .rtt_api import RealtimeTrainsApiClient, RealtimeTrainsApiAuthError
 
 _LOGGER = logging.getLogger(__name__)
@@ -161,7 +170,7 @@ def _query_form_defaults(raw_query: dict[str, Any]) -> dict[str, Any]:
 class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
     """Handle a config flow for Realtime Trains API."""
 
-    VERSION = 1
+    VERSION = 2
     domain = DOMAIN
 
     def __init__(self) -> None:
@@ -187,18 +196,27 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
                 errors[RTT_CONF_REFRESH_TOKEN] = "required"
             else:
                 try:
-                    from homeassistant.helpers.aiohttp_client import async_get_clientsession
                     session = async_get_clientsession(self.hass)
                     client = RealtimeTrainsApiClient(session, "none", refresh_token)
                     access_token = await client.async_get_access_token()
 
-                    self.hass.config_entries.async_update_entry(
-                        self._reauth_entry,
-                        data={
+                    new_unique_id = token_fingerprint(refresh_token)
+                    new_title = scrub_legacy_title(self._reauth_entry.title)
+
+                    update_kwargs: dict[str, Any] = {
+                        "data": {
                             **self._reauth_entry.data,
                             RTT_CONF_API_TOKEN: access_token,
                             RTT_CONF_REFRESH_TOKEN: refresh_token,
                         },
+                        "unique_id": new_unique_id,
+                    }
+                    if new_title != self._reauth_entry.title:
+                        update_kwargs["title"] = new_title
+
+                    self.hass.config_entries.async_update_entry(
+                        self._reauth_entry,
+                        **update_kwargs,
                     )
                     await self.hass.config_entries.async_reload(
                         self._reauth_entry.entry_id
@@ -221,17 +239,19 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
 
         if user_input is not None:
             refresh_token = user_input.get(RTT_CONF_REFRESH_TOKEN, "").strip()
-            _LOGGER.debug("Starting RTT config flow validation with refresh token (truncated): %s...", refresh_token[:10] if refresh_token else "none")
+            _LOGGER.debug("Starting RTT config flow validation")
             
             if not refresh_token:
                 errors[RTT_CONF_REFRESH_TOKEN] = "required"
-            else:
+
+            try:
+                parse_time_windows(user_input.get(CONF_PEAK_WINDOWS, ""))
+            except ValueError:
+                errors[CONF_PEAK_WINDOWS] = "invalid_time_windows"
+
+            if not errors:
                 try:
-                    # Validate by getting the first access token
-                    from homeassistant.helpers.aiohttp_client import async_get_clientsession
                     session = async_get_clientsession(self.hass)
-                    # Create a temporary client to fetch the first token
-                    # Use 'none' as initial token since we are about to refresh
                     client = RealtimeTrainsApiClient(session, "none", refresh_token)
                     
                     _LOGGER.debug("Attempting to fetch initial access token to validate refresh token")
@@ -242,13 +262,9 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
                     user_input[RTT_CONF_REFRESH_TOKEN] = refresh_token
                     user_input[CONF_PEAK_INTERVAL] = int(user_input.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL))
                     user_input[CONF_OFF_PEAK_INTERVAL] = int(user_input.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL))
-                    try:
-                        parse_time_windows(user_input.get(CONF_PEAK_WINDOWS, ""))
-                    except ValueError:
-                        errors[CONF_PEAK_WINDOWS] = "invalid_time_windows"
-                        raise ValueError("Invalid time windows")
-                        
-                    await self.async_set_unique_id(refresh_token.lower()[:30])
+
+                    unique_id = token_fingerprint(refresh_token)
+                    await self.async_set_unique_id(unique_id)
                     self._abort_if_unique_id_configured()
                     self._config_data = dict(user_input)
                     _LOGGER.debug("Config flow user step completed successfully")
@@ -308,11 +324,7 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
         )
 
     def _entry_title(self) -> str:
-        token = self._config_data.get(RTT_CONF_API_TOKEN)
-        if token:
-            display_token = token[:5] + "..." if len(token) > 5 else token
-            return f"Realtime Trains API ({display_token})"
-        return "Realtime Trains API"
+        return DEFAULT_TITLE
 
     @staticmethod
     @callback

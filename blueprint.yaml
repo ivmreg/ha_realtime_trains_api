@@ -10,7 +10,7 @@ blueprint:
       url: "https://data.rtt.io/api/get_access_token"
       headers:
         accept: "application/json"
-        Authorization: "Bearer !secret rtt_refresh_token"
+        Authorization: !secret rtt_refresh_token_header
     rtt_search:
       url: "https://data.rtt.io/gb-nr/location?code={{ origin }}&filterTo={{ destination }}&timeFrom={{ date }}T{{ '%02d' | format((time | int / 100) | int) }}:{{ '%02d' | format(time | int % 100) }}:00"
       headers:

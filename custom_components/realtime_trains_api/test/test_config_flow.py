@@ -9,6 +9,7 @@ from custom_components.realtime_trains_api.config_flow import (
     RealtimeTrainsConfigFlow,
     RealtimeTrainsOptionsFlowHandler,
 )
+from custom_components.realtime_trains_api.normalization import token_fingerprint
 from custom_components.realtime_trains_api.rtt_api import RealtimeTrainsApiAuthError
 
 USER_INPUT = {
@@ -153,9 +154,12 @@ async def test_user_step_missing_refresh_token():
     assert result["errors"] == {"refresh_token": "required"}
 
 
-def _make_config_entry(queries=None, options=None):
+def _make_config_entry(queries=None, options=None, title="Realtime Trains API", unique_id="old-unique-id", version=2):
     entry = MagicMock()
     entry.entry_id = "entry-1"
+    entry.title = title
+    entry.unique_id = unique_id
+    entry.version = version
     entry.data = {
         "token": "access-token",
         "refresh_token": "refresh-token",
@@ -309,7 +313,7 @@ async def test_options_remove_query():
 @pytest.mark.asyncio
 async def test_reauth_updates_entry_and_reloads():
     flow = _make_flow()
-    entry = _make_config_entry()
+    entry = _make_config_entry(title="Realtime Trains API (refre...)")
     flow.hass.config_entries.async_get_entry = MagicMock(return_value=entry)
     flow.hass.config_entries.async_update_entry = MagicMock()
     flow.hass.config_entries.async_reload = AsyncMock()
@@ -326,10 +330,35 @@ async def test_reauth_updates_entry_and_reloads():
 
     assert result["type"] == "abort"
     assert result["reason"] == "reauth_successful"
-    updated_data = flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
+    call_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+    updated_data = call_kwargs["data"]
     assert updated_data["token"] == "new-access-token"
     assert updated_data["refresh_token"] == "new-refresh-token"
+    assert call_kwargs["unique_id"] == token_fingerprint("new-refresh-token")
+    assert call_kwargs["title"] == "Realtime Trains API"
     flow.hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+
+
+@pytest.mark.asyncio
+async def test_reauth_preserves_custom_title():
+    flow = _make_flow()
+    entry = _make_config_entry(title="Realtime Trains API (Work)")
+    flow.hass.config_entries.async_get_entry = MagicMock(return_value=entry)
+    flow.hass.config_entries.async_update_entry = MagicMock()
+    flow.hass.config_entries.async_reload = AsyncMock()
+    flow.context = {"entry_id": entry.entry_id}
+
+    with _patch_api_client(token="new-access-token"):
+        await flow.async_step_reauth(dict(entry.data))
+        result = await flow.async_step_reauth_confirm(
+            {"refresh_token": "new-refresh-token"}
+        )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "reauth_successful"
+    call_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+    assert call_kwargs["unique_id"] == token_fingerprint("new-refresh-token")
+    assert "title" not in call_kwargs
 
 
 @pytest.mark.asyncio
@@ -345,3 +374,61 @@ async def test_reauth_rejects_bad_token():
 
     assert result["type"] == "form"
     assert result["errors"] == {"refresh_token": "invalid_auth"}
+
+
+@pytest.mark.asyncio
+async def test_user_step_invalid_time_windows():
+    flow = _make_flow()
+    with _patch_api_client():
+        result = await flow.async_step_user(
+            {
+                **USER_INPUT,
+                "peak_windows": "99:99-",
+            }
+        )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"peak_windows": "invalid_time_windows"}
+    assert "base" not in result["errors"]
+    assert getattr(flow, "unique_id", None) is None
+
+
+@pytest.mark.asyncio
+async def test_credential_hygiene(caplog):
+    flow = _make_flow()
+    secret_refresh = "super_secret_refresh_token_abcdef123456"
+    secret_access = "super_secret_access_token_789012"
+
+    with _patch_api_client(token=secret_access), caplog.at_level("DEBUG"):
+        user_result = await flow.async_step_user(
+            {
+                **USER_INPUT,
+                "refresh_token": secret_refresh,
+            }
+        )
+        assert user_result["type"] == "form"
+        assert user_result["step_id"] == "query"
+
+        result = await flow.async_step_query(dict(QUERY_INPUT))
+
+    assert result["type"] == "create_entry"
+    # Title must not expose token fragments
+    assert result["title"] == "Realtime Trains API"
+    assert "super_secret" not in result["title"]
+    assert secret_refresh[:5] not in result["title"]
+    assert secret_access[:5] not in result["title"]
+
+    # Unique ID must be a SHA-256 fingerprint, not raw token prefix
+    expected_unique_id = token_fingerprint(secret_refresh)
+    assert flow.unique_id == expected_unique_id
+    assert "super_secret" not in flow.unique_id
+    assert secret_refresh[:10] not in flow.unique_id
+
+    # Version check
+    assert RealtimeTrainsConfigFlow.VERSION == 2
+
+    # No token fragments in logs
+    assert "super_secret" not in caplog.text
+    assert secret_refresh[:10] not in caplog.text
+    assert secret_access[:10] not in caplog.text

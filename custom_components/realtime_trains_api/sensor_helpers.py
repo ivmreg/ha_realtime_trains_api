@@ -144,6 +144,8 @@ def build_subsequent_stop(stop: Mapping[str, Any], fallback_tz: Any) -> dict[str
         "name": location.get("description", ""),
         "scheduled": scheduled_dt.strftime(RTT_TIME_FORMAT),
         "estimated": estimated_dt.strftime(RTT_TIME_FORMAT),
+        "scheduled_iso": scheduled_dt.isoformat(),
+        "estimated_iso": estimated_dt.isoformat(),
     }
 
 
