@@ -21,30 +21,26 @@ class TestEvaluatePinnedDisruption:
         assert evaluate_pinned_disruption(None, 5) == (False, None)
 
     def test_cancelled_is_disrupted(self):
-        train = {"is_cancelled": True, "scheduled": "x", "estimated": "x"}
+        train = {"is_cancelled": True}
         assert evaluate_pinned_disruption(train, 5) == (True, "Cancelled")
 
     def test_journey_status_cancelled_is_disrupted(self):
-        train = {"status": "Cancelled", "scheduled": "x", "estimated": "x"}
+        train = {"status": "Cancelled"}
         assert evaluate_pinned_disruption(train, 5) == (True, "Cancelled")
+        train_lower = {"status": "cancelled"}
+        assert evaluate_pinned_disruption(train_lower, 5) == (True, "Cancelled")
 
     def test_delay_beyond_threshold(self):
-        train = {
-            "scheduled": "07-04-2026 07:42",
-            "estimated": "07-04-2026 07:49",
-        }
+        train = {"delay_minutes": 7}
         assert evaluate_pinned_disruption(train, 5) == (True, "Delayed 7 min")
 
     def test_small_delay_not_disrupted(self):
-        train = {
-            "scheduled": "07-04-2026 07:42",
-            "estimated": "07-04-2026 07:45",
-        }
+        train = {"delay_minutes": 3}
         assert evaluate_pinned_disruption(train, 5) == (False, None)
 
-    def test_unparseable_times_not_disrupted(self):
-        train = {"scheduled": "garbage", "estimated": "07:49"}
-        assert evaluate_pinned_disruption(train, 5) == (False, None)
+    def test_missing_or_invalid_delay_not_disrupted(self):
+        assert evaluate_pinned_disruption({"delay_minutes": None}, 5) == (False, None)
+        assert evaluate_pinned_disruption({"delay_minutes": "invalid"}, 5) == (False, None)
 
 
 def _service(uid: str, sched: str) -> dict:
@@ -127,26 +123,73 @@ def _make_binary_sensor(pinned_train):
 
 def test_binary_sensor_on_when_cancelled():
     sensor = _make_binary_sensor({
-        "scheduled": "07-04-2026 07:42",
-        "estimated": "07-04-2026 07:42",
+        "scheduled": "2026-04-07T07:42:00+01:00",
+        "estimated": "2026-04-07T07:42:00+01:00",
+        "delay_minutes": 0,
         "is_cancelled": True,
         "platform": "2",
         "destination_name": "London Cannon Street",
         "service_uid": "S2",
+        "disruption_reason": "Signalling system failure",
     })
     assert sensor.is_on is True
     attrs = sensor.extra_state_attributes
     assert attrs["reason"] == "Cancelled"
     assert attrs["pinned_departure_time"] == "07:42"
+    assert attrs["scheduled"] == "2026-04-07T07:42:00+01:00"
+    assert attrs["estimated"] == "2026-04-07T07:42:00+01:00"
+    assert attrs["delay_minutes"] == 0
+    assert attrs["is_cancelled"] is True
+    assert attrs["platform"] == "2"
+    assert attrs["destination_name"] == "London Cannon Street"
+    assert attrs["service_uid"] == "S2"
+    assert attrs["disruption_reason"] == "Signalling system failure"
+    assert "scheduled_iso" not in attrs
+    assert "estimated_iso" not in attrs
+
+
+def test_binary_sensor_on_when_delayed_beyond_threshold():
+    sensor = _make_binary_sensor({
+        "scheduled": "2026-04-07T07:42:00+01:00",
+        "estimated": "2026-04-07T07:50:00+01:00",
+        "delay_minutes": 8,
+        "is_cancelled": False,
+        "platform": "2",
+        "destination_name": "London Cannon Street",
+        "service_uid": "S2",
+        "disruption_reason": None,
+    })
+    assert sensor.is_on is True
+    attrs = sensor.extra_state_attributes
+    assert attrs["reason"] == "Delayed 8 min"
+    assert attrs["pinned_departure_time"] == "07:42"
+    assert attrs["scheduled"] == "2026-04-07T07:42:00+01:00"
+    assert attrs["estimated"] == "2026-04-07T07:50:00+01:00"
+    assert attrs["delay_minutes"] == 8
+    assert attrs["is_cancelled"] is False
+    assert "scheduled_iso" not in attrs
+    assert "estimated_iso" not in attrs
 
 
 def test_binary_sensor_off_when_on_time():
     sensor = _make_binary_sensor({
-        "scheduled": "07-04-2026 07:42",
-        "estimated": "07-04-2026 07:43",
+        "scheduled": "2026-04-07T07:42:00+01:00",
+        "estimated": "2026-04-07T07:43:00+01:00",
+        "delay_minutes": 1,
         "is_cancelled": False,
+        "platform": "2",
+        "destination_name": "London Cannon Street",
+        "service_uid": "S2",
+        "disruption_reason": None,
     })
     assert sensor.is_on is False
+    attrs = sensor.extra_state_attributes
+    assert attrs["reason"] is None
+    assert attrs["scheduled"] == "2026-04-07T07:42:00+01:00"
+    assert attrs["estimated"] == "2026-04-07T07:43:00+01:00"
+    assert attrs["delay_minutes"] == 1
+    assert "scheduled_iso" not in attrs
+    assert "estimated_iso" not in attrs
 
 
 def test_binary_sensor_off_when_train_missing():

@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
 from custom_components.realtime_trains_api.sensor_helpers import (
-    collect_subsequent_stops,
     build_default_sensor_name,
     find_last_report,
     parse_rtt_datetime,
@@ -200,81 +199,6 @@ def test_subsequent_stop_start_index_steps_back_after_arrival() -> None:
     assert subsequent_stop_start_index(-1, None) == 0
 
 
-def test_collect_subsequent_stops_uses_expected_time_source_and_filters() -> None:
-    locations = [
-        {
-            "location": {"shortCodes": ["AAA"], "description": "Alpha"},
-            "temporalData": {
-                "displayAs": "CALL",
-                "arrival": {},
-                "departure": {
-                    "scheduleAdvertised": "2026-04-01T10:00:00",
-                    "realtimeForecast": "2026-04-01T10:02:00",
-                },
-            },
-        },
-        {
-            "location": {"shortCodes": ["BBB"], "description": "Beta"},
-            "temporalData": {
-                "displayAs": "CALL",
-                "arrival": {
-                    "scheduleAdvertised": "2026-04-01T10:10:00",
-                    "realtimeActual": "2026-04-01T10:12:00",
-                },
-            },
-        },
-        {
-            "location": {"shortCodes": ["CCC"], "description": "Gamma"},
-            "temporalData": {
-                "displayAs": "PASS",
-                "arrival": {
-                    "scheduleAdvertised": "2026-04-01T10:20:00",
-                    "realtimeEstimate": "2026-04-01T10:21:00",
-                },
-            },
-        },
-        {
-            "location": {"shortCodes": ["DDD"], "description": "Delta"},
-            "temporalData": {
-                "displayAs": "DEST",
-                "arrival": {
-                    "scheduleAdvertised": "2026-04-01T10:30:00",
-                    "realtimeActual": "2026-04-01T10:31:00",
-                },
-            },
-        },
-    ]
-
-    result = collect_subsequent_stops(locations, 0, timezone.utc)
-
-    assert result == [
-        {
-            "stop": "AAA",
-            "name": "Alpha",
-            "scheduled": "01-04-2026 10:00",
-            "estimated": "01-04-2026 10:02",
-            "scheduled_iso": "2026-04-01T10:00:00+00:00",
-            "estimated_iso": "2026-04-01T10:02:00+00:00",
-        },
-        {
-            "stop": "BBB",
-            "name": "Beta",
-            "scheduled": "01-04-2026 10:10",
-            "estimated": "01-04-2026 10:12",
-            "scheduled_iso": "2026-04-01T10:10:00+00:00",
-            "estimated_iso": "2026-04-01T10:12:00+00:00",
-        },
-        {
-            "stop": "DDD",
-            "name": "Delta",
-            "scheduled": "01-04-2026 10:30",
-            "estimated": "01-04-2026 10:31",
-            "scheduled_iso": "2026-04-01T10:30:00+00:00",
-            "estimated_iso": "2026-04-01T10:31:00+00:00",
-        },
-    ]
-
-
 def test_query_scheme_and_normalization_origin_only():
     from custom_components.realtime_trains_api.sensor import _QUERY_SCHEME, _normalize_query
 
@@ -341,4 +265,198 @@ def test_sensor_unrecorded_attributes_and_empty_next_trains():
     )
     attrs = sensor.extra_state_attributes
     assert ATTR_NEXT_TRAINS in attrs
-    assert attrs[ATTR_NEXT_TRAINS] == []
+    assert attrs["contract_version"] == 2
+    assert "schema_version" not in attrs
+
+
+def test_calculate_service_status_cases() -> None:
+    from custom_components.realtime_trains_api.sensor_helpers import calculate_service_status
+
+    sched = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+
+    # Cancelled
+    assert calculate_service_status(sched, sched, True) == (
+        None, "cancelled", "cancelled", "Cancelled", None
+    )
+
+    # Missing estimate defaults to on_time
+    assert calculate_service_status(sched, None, False) == (
+        0, "on_time", "on-time", "On Time", None
+    )
+
+    # Exact on-time
+    assert calculate_service_status(sched, sched, False) == (
+        0, "on_time", "on-time", "On Time", None
+    )
+
+    # Within 1 min tolerance (+1 min is on time)
+    est_plus_1 = datetime(2026, 4, 1, 10, 1, tzinfo=timezone.utc)
+    assert calculate_service_status(sched, est_plus_1, False) == (
+        1, "on_time", "on-time", "On Time", None
+    )
+
+    # Within 1 min tolerance (-1 min is on time)
+    est_minus_1 = datetime(2026, 4, 1, 9, 59, tzinfo=timezone.utc)
+    assert calculate_service_status(sched, est_minus_1, False) == (
+        -1, "on_time", "on-time", "On Time", None
+    )
+
+    # Delayed 5 mins
+    est_plus_5 = datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc)
+    assert calculate_service_status(sched, est_plus_5, False) == (
+        5, "delayed", "delayed", "Exp 10:05", "+5m"
+    )
+
+    # Early 4 mins
+    est_minus_4 = datetime(2026, 4, 1, 9, 56, tzinfo=timezone.utc)
+    assert calculate_service_status(sched, est_minus_4, False) == (
+        -4, "early", "early", "Early 09:56", "-4m"
+    )
+
+
+def test_build_calling_points_full_behavior() -> None:
+    from custom_components.realtime_trains_api.sensor_helpers import build_calling_points
+
+    locations = [
+        {
+            "location": {"shortCodes": ["LBG"], "longCodes": ["LONBDG"], "description": "London Bridge"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "arrival": {"scheduleAdvertised": "2026-04-01T10:08:00", "realtimeActual": "2026-04-01T10:08:00"},
+            },
+        },
+        {
+            "location": {"shortCodes": ["LEW"], "longCodes": ["LEWSHM"], "description": "Lewisham"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "arrival": {"scheduleAdvertised": "2026-04-01T10:15:00", "realtimeForecast": "2026-04-01T10:20:00"},
+            },
+        },
+        {
+            "location": {"shortCodes": ["BKH"], "longCodes": ["BLKHTH"], "description": "Blackheath"},
+            "temporalData": {
+                "displayAs": "DEST",
+                "arrival": {"scheduleAdvertised": "2026-04-01T10:25:00", "isCancelled": True},
+            },
+        },
+    ]
+
+    # Test when train just departed LBG
+    points = build_calling_points(
+        locations=locations,
+        start_index=0,
+        last_report_station="LBG",
+        last_report_type="Departure",
+        last_report_time=datetime(2026, 4, 1, 10, 9, tzinfo=timezone.utc),
+        fallback_tz=timezone.utc,
+    )
+
+    assert len(points) == 3
+    # LBG
+    assert points[0]["station_name"] == "London Bridge"
+    assert points[0]["crs"] == "LBG"
+    assert points[0]["tiploc"] == "LONBDG"
+    assert points[0]["time"] == "10:08"
+    assert points[0]["is_passed"] is True
+    assert points[0]["is_current"] is False
+
+    # LEW
+    assert points[1]["station_name"] == "Lewisham"
+    assert points[1]["status"] == "delayed"
+    assert points[1]["status_class"] == "delayed"
+    assert points[1]["status_label"] == "Exp 10:20"
+    assert points[1]["delay_minutes"] == 5
+    assert points[1]["is_between_previous"] is True
+    assert points[1]["is_passed"] is False
+
+    # BKH (cancelled)
+    assert points[2]["station_name"] == "Blackheath"
+    assert points[2]["status"] == "cancelled"
+    assert points[2]["status_class"] == "cancelled"
+    assert points[2]["status_label"] == "Cancelled"
+    assert points[2]["delay_minutes"] is None
+
+
+def test_build_calling_points_injects_unlisted_previous_station() -> None:
+    from custom_components.realtime_trains_api.sensor_helpers import build_calling_points
+
+    locations = [
+        {
+            "location": {"shortCodes": ["LEW"], "description": "Lewisham"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "arrival": {"scheduleAdvertised": "2026-04-01T10:15:00"},
+            },
+        },
+    ]
+
+    # Train departed LBG (which is not in the query's locations list)
+    points = build_calling_points(
+        locations=locations,
+        start_index=0,
+        last_report_station="LBG",
+        last_report_type="Departure",
+        last_report_time=datetime(2026, 4, 1, 10, 9, tzinfo=timezone.utc),
+        fallback_tz=timezone.utc,
+    )
+
+    assert len(points) == 2
+    assert points[0]["crs"] == "LBG"
+    assert points[0]["station_name"] == "LBG"
+    assert points[0]["is_passed"] is True
+    assert isinstance(points[0]["scheduled"], str)
+    assert points[0]["scheduled"] == "2026-04-01T10:09:00+00:00"
+    assert points[0]["estimated"] == "2026-04-01T10:09:00+00:00"
+    assert points[0]["time"] == "10:09"
+    assert points[0]["status_label"] == "On time"
+    assert points[1]["crs"] == "LEW"
+    assert points[1]["is_between_previous"] is True
+
+
+def test_build_calling_points_does_not_inject_without_last_report_time() -> None:
+    from custom_components.realtime_trains_api.sensor_helpers import build_calling_points
+
+    locations = [
+        {
+            "location": {"shortCodes": ["LEW"], "description": "Lewisham"},
+            "temporalData": {
+                "displayAs": "CALL",
+                "arrival": {"scheduleAdvertised": "2026-04-01T10:15:00"},
+            },
+        },
+    ]
+
+    points = build_calling_points(
+        locations=locations,
+        start_index=0,
+        last_report_station="LBG",
+        last_report_type="Departure",
+        last_report_time=None,
+        fallback_tz=timezone.utc,
+    )
+
+    assert len(points) == 1
+    assert points[0]["crs"] == "LEW"
+
+
+def test_primary_codes_type_normalization() -> None:
+    from custom_components.realtime_trains_api.sensor_helpers import (
+        _primary_short_code,
+        _primary_long_code,
+    )
+
+    # Integer values in crs or tiploc coerced to string
+    assert _primary_short_code({"crs": 123}) == "123"
+    assert _primary_long_code({"tiploc": 456}) == "456"
+
+    # Integer values in shortCodes or longCodes array coerced to string
+    assert _primary_short_code({"shortCodes": [789]}) == "789"
+    assert _primary_long_code({"longCodes": [987]}) == "987"
+
+    # None or whitespace
+    assert _primary_short_code({}) is None
+    assert _primary_long_code({}) is None
+    assert _primary_short_code({"shortCodes": []}) is None
+    assert _primary_long_code({"longCodes": [None]}) is None
+    assert _primary_short_code({"crs": "  "}) is None
+    assert _primary_long_code({"tiploc": ""}) is None

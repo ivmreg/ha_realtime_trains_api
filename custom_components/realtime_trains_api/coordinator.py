@@ -28,7 +28,9 @@ from .sensor_helpers import (
     parse_rtt_datetime,
     find_last_report,
     subsequent_stop_start_index,
-    collect_subsequent_stops,
+    calculate_service_status,
+    build_calling_points,
+    _primary_short_code,
 )
 from .normalization import coerce_time_offset, split_csv
 from .rtt_api import (
@@ -41,7 +43,6 @@ from .rtt_api import (
 
 _LOGGER = logging.getLogger(__name__)
 TIMEZONE = ZoneInfo('Europe/London')
-STRFFORMAT = "%d-%m-%Y %H:%M"
 
 # How many journey-detail requests may be in flight at once. Kept low so a
 # board with journey data for several trains stays well inside the RTT
@@ -126,8 +127,9 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         locations = service.get("locations", [])
 
         reasons = service.get("reasons", [])
-        if reasons:
-            train["reason"] = reasons[0].get("shortText")
+        disruption_reason = reasons[0].get("shortText") if reasons else None
+        if disruption_reason:
+            train["disruption_reason"] = str(disruption_reason)
 
         last_report_idx, last_report_type, last_report_station, last_report_time = find_last_report(
             locations,
@@ -135,14 +137,23 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         just_departed_idx = subsequent_stop_start_index(last_report_idx, last_report_type)
 
+        calling_points = build_calling_points(
+            locations,
+            just_departed_idx,
+            last_report_station,
+            last_report_type,
+            last_report_time,
+            TIMEZONE,
+        )
+        train["calling_points"] = calling_points
+
         found_dest = False
         found_start = False
         stopCount = -1
-        subsequent_stops = collect_subsequent_stops(locations, just_departed_idx, TIMEZONE)
 
         for i, stop in enumerate(locations):
             stop_location = stop.get("location", {})
-            crs = stop_location.get("shortCodes", [None])[0] if stop_location.get("shortCodes") else None
+            crs = _primary_short_code(stop_location)
             temporal = stop.get("temporalData", {})
             display_as = temporal.get("displayAs") or ""
 
@@ -159,38 +170,53 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         sch_arr_dt = parse_rtt_datetime(sch_arr_str, TIMEZONE)
                         est_arr_dt = parse_rtt_datetime(est_arr_str, TIMEZONE) if est_arr_str else sch_arr_dt
 
-                        status = "OK"
-                        if 'CANCEL' in display_as or temporal.get("status") == "CANCELLED":
-                            status = "Cancelled"
-                        elif est_arr_dt > sch_arr_dt:
-                            status = "Delayed"
+                        display_as_clean = str(display_as).lower()
+                        status_clean = str(temporal.get("status") or arr_data.get("status") or "").lower()
+                        is_arr_cancelled = bool(
+                            "cancel" in display_as_clean
+                            or "cancel" in status_clean
+                            or arr_data.get("isCancelled")
+                            or temporal.get("isCancelled")
+                        )
+
+                        if is_arr_cancelled:
+                            dest_status = "cancelled"
+                            dest_delay_mins = None
+                        else:
+                            dest_delay_mins = int(round((est_arr_dt - sch_arr_dt).total_seconds() / 60.0))
+                            if abs(dest_delay_mins) <= 1:
+                                dest_status = "on_time"
+                            elif dest_delay_mins < 0:
+                                dest_status = "early"
+                            else:
+                                dest_status = "delayed"
+
+                        duration_mins = int(_delta_seconds(est_arr_dt, estimated_departure) // 60)
 
                         train.update({
-                            "scheduled_arrival": sch_arr_dt.strftime(STRFFORMAT),
-                            "estimate_arrival": est_arr_dt.strftime(STRFFORMAT),
-                            "scheduled_arrival_iso": sch_arr_dt.isoformat(),
-                            "estimate_arrival_iso": est_arr_dt.isoformat(),
-                            "journey_time_mins": _delta_seconds(est_arr_dt, estimated_departure) // 60,
-                            "stops": stopCount,
-                            "status": status,
+                            "destination_arrival_scheduled": sch_arr_dt.isoformat(),
+                            "destination_arrival_estimated": est_arr_dt.isoformat() if (est_arr_str and not is_arr_cancelled) else None,
+                            "destination_arrival_time": est_arr_dt.strftime("%H:%M") if not is_arr_cancelled else None,
+                            "destination_status": dest_status,
+                            "destination_delay_minutes": dest_delay_mins,
+                            "journey_duration_minutes": duration_mins,
+                            "stops_count": stopCount,
                         })
                         found_dest = True
 
             stopCount += 1
 
-        train["subsequent_stops"] = subsequent_stops
-
         if journey_end and not found_dest:
             _LOGGER.debug("Could not find %s in stops for service %s.", journey_end, train['service_uid'])
 
         if not journey_end:
-            train["stops"] = stopCount
+            train["stops_count"] = stopCount
 
         if last_report_station is not None:
-            train["last_report_station"] = last_report_station
-            train["last_report_type"] = last_report_type
-            train["last_report_time"] = last_report_time.strftime(STRFFORMAT) if last_report_time else None
-            train["last_report_time_iso"] = last_report_time.isoformat() if last_report_time else None
+            train["last_report_station"] = str(last_report_station)
+            train["last_report_type"] = str(last_report_type) if last_report_type else None
+            train["last_report_time"] = last_report_time.isoformat() if last_report_time else None
+            train["last_report_time_label"] = last_report_time.strftime("%H:%M") if last_report_time else None
         return None
 
     def _is_peak(self, now: datetime) -> bool:
@@ -241,33 +267,95 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         platform: Any,
     ) -> dict[str, Any]:
         """Assemble the next_trains entry for a single service."""
-        schedule_metadata = departure.get("scheduleMetadata", {})
-        loc_metadata = departure.get("locationMetadata", {})
-        temporal_data = departure.get("temporalData", {}).get("departure", {})
+        schedule_metadata = departure.get("scheduleMetadata") or {}
+        loc_metadata = departure.get("locationMetadata") or {}
+        temporal_container = departure.get("temporalData") or {}
+        temporal_data = temporal_container.get("departure") or {}
 
-        origins = departure.get("origin", [])
-        origin_name = origins[0].get("location", {}).get("description", "") if origins else ""
+        origins = departure.get("origin") or []
+        origin_name = str(origins[0].get("location", {}).get("description") or "") if origins else ""
 
-        destinations = departure.get("destination", [])
-        destination_name = destinations[0].get("location", {}).get("description", "") if destinations else ""
+        destinations = departure.get("destination") or []
+        destination_name = str(destinations[0].get("location", {}).get("description") or "") if destinations else ""
+
+        display_as = str(temporal_data.get("displayAs") or temporal_container.get("displayAs") or "").lower()
+        status_str = str(temporal_data.get("status") or temporal_container.get("status") or "").lower()
+        is_cancelled = bool(
+            temporal_data.get("isCancelled")
+            or temporal_container.get("isCancelled")
+            or schedule_metadata.get("isCancelled")
+            or "cancel" in display_as
+            or "cancel" in status_str
+        )
+
+        service_uid = str(schedule_metadata.get("identity") or "")
+        headcode = str(schedule_metadata.get("trainReportingIdentity") or "")
+        mode_type = str(schedule_metadata.get("modeType") or "")
+        operator_name = str(schedule_metadata.get("operator", {}).get("name") or "")
+
+        platform_str = str(platform).strip() if platform is not None and str(platform).strip() else None
+
+        stock_raw = loc_metadata.get("stockBranding")
+        stock_str = str(stock_raw).strip() if stock_raw is not None and str(stock_raw).strip() else None
+
+        length_raw = loc_metadata.get("numberOfVehicles")
+        try:
+            length = int(length_raw) if length_raw is not None else None
+        except (TypeError, ValueError):
+            length = None
+
+        lateness_raw = temporal_data.get("realtimeAdvertisedLateness")
+        try:
+            lateness = int(lateness_raw) if lateness_raw is not None else None
+        except (TypeError, ValueError):
+            lateness = None
+
+        scheduled_iso = scheduledTs.isoformat()
+        estimated_iso = estimatedTs.isoformat() if (estimatedTs is not None and not is_cancelled) else None
+        scheduled_time = scheduledTs.strftime("%H:%M")
+        estimated_time = estimatedTs.strftime("%H:%M") if (estimatedTs is not None and not is_cancelled) else None
+
+        delay_mins, status, status_class, status_label, offset_label = calculate_service_status(
+            scheduledTs, estimatedTs, is_cancelled
+        )
+
+        effective_departure = estimatedTs if estimatedTs is not None else scheduledTs
 
         return {
             "origin_name": origin_name,
             "destination_name": destination_name,
-            "service_uid": schedule_metadata.get("identity"),
-            "headcode": schedule_metadata.get("trainReportingIdentity"),
-            "type": schedule_metadata.get("modeType"),
-            "operator_name": schedule_metadata.get("operator", {}).get("name", ""),
-            "scheduled": scheduledTs.strftime(STRFFORMAT),
-            "estimated": estimatedTs.strftime(STRFFORMAT),
-            "scheduled_iso": scheduledTs.isoformat(),
-            "estimated_iso": estimatedTs.isoformat(),
-            "minutes": _delta_seconds(estimatedTs, now) // 60,
-            "lateness": temporal_data.get("realtimeAdvertisedLateness"),
-            "is_cancelled": temporal_data.get("isCancelled", False),
-            "platform": platform,
-            "length": loc_metadata.get("numberOfVehicles"),
-            "stock": loc_metadata.get("stockBranding"),
+            "service_uid": service_uid,
+            "headcode": headcode,
+            "type": mode_type,
+            "operator_name": operator_name,
+            "scheduled": scheduled_iso,
+            "estimated": estimated_iso,
+            "scheduled_time": scheduled_time,
+            "estimated_time": estimated_time,
+            "minutes": _delta_seconds(effective_departure, now) // 60,
+            "delay_minutes": delay_mins,
+            "status": status,
+            "status_class": status_class,
+            "status_label": status_label,
+            "offset_label": offset_label,
+            "lateness": lateness,
+            "is_cancelled": is_cancelled,
+            "platform": platform_str,
+            "length": length,
+            "stock": stock_str,
+            "calling_points": [],
+            "destination_arrival_scheduled": None,
+            "destination_arrival_estimated": None,
+            "destination_arrival_time": None,
+            "destination_status": None,
+            "destination_delay_minutes": None,
+            "journey_duration_minutes": None,
+            "stops_count": None,
+            "disruption_reason": None,
+            "last_report_station": None,
+            "last_report_type": None,
+            "last_report_time": None,
+            "last_report_time_label": None,
         }
 
     async def _fetch_one_query(
@@ -340,13 +428,14 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
             scheduledTs, estimatedTs = times
 
-            if _delta_seconds(estimatedTs, now) < time_offset.total_seconds():
+            effective_departure = estimatedTs if estimatedTs is not None else scheduledTs
+            if _delta_seconds(effective_departure, now) < time_offset.total_seconds():
                 continue
 
             if nextDepartureEstimatedTs is None:
-                nextDepartureEstimatedTs = estimatedTs
+                nextDepartureEstimatedTs = effective_departure
             else:
-                nextDepartureEstimatedTs = min(nextDepartureEstimatedTs, estimatedTs)
+                nextDepartureEstimatedTs = min(nextDepartureEstimatedTs, effective_departure)
 
             train = self._build_train(departure, scheduledTs, estimatedTs, now, platform)
             next_trains.append(train)
@@ -367,7 +456,11 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         pinned_time = query.get(CONF_PINNED_DEPARTURE)
         if pinned_time:
             for train in next_trains:
-                if train["scheduled"].endswith(f" {pinned_time}"):
+                if (
+                    train.get("scheduled_time") == pinned_time
+                    or (train.get("scheduled") and train["scheduled"].endswith(f" {pinned_time}"))
+                    or (train.get("scheduled") and f"T{pinned_time}:" in str(train["scheduled"]))
+                ):
                     train["is_pinned"] = True
                     pinned_train = train
                     break

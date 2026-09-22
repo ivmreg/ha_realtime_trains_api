@@ -43,6 +43,8 @@ from .const import (
     CONF_PINNED_DEPARTURE,
     DEFAULT_LOOKBACK_MINUTES,
     HHMM_PATTERN,
+    CONTRACT_VERSION,
+    ATTR_CONTRACT_VERSION,
 )
 from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
 from .sensor_helpers import (
@@ -71,7 +73,6 @@ ATTR_ERROR = "error"
 ATTR_PINNED_TRAIN = "pinned_train"
 
 TIMEZONE = ZoneInfo('Europe/London')
-STRFFORMAT = "%d-%m-%Y %H:%M"
 
 _QUERY_SCHEME = vol.Schema(
     {
@@ -360,7 +361,9 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         """Return other details about the sensor state."""
-        attrs = {}
+        attrs = {
+            ATTR_CONTRACT_VERSION: CONTRACT_VERSION,
+        }
         
         if self.coordinator.data and self._query_key in self.coordinator.data:
             data = self.coordinator.data[self._query_key]

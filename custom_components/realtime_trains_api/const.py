@@ -38,3 +38,7 @@ DEFAULT_MAX_TRAINS = 10
 # Polling backoff applied when auto_adjust_scans is enabled and a station
 # currently has no departures at all.
 NO_TRAINS_BACKOFF_SECONDS = 1800
+
+# Canonical contract version
+CONTRACT_VERSION = 2
+ATTR_CONTRACT_VERSION = "contract_version"

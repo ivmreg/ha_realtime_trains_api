@@ -9,8 +9,6 @@ from typing import Any, TypeVar, cast
 from .rtt_api import RealtimeTrainsApiAuthError, RealtimeTrainsApiError
 
 T = TypeVar("T")
-
-RTT_TIME_FORMAT = "%d-%m-%Y %H:%M"
 SUBSEQUENT_STOP_DISPLAY_AS = frozenset({"CALL", "DEST"})
 
 
@@ -63,10 +61,57 @@ def parse_rtt_datetime(value: str, fallback_tz: Any) -> datetime:
 
 
 def _primary_short_code(location: Mapping[str, Any]) -> str | None:
-    short_codes = location.get("shortCodes")
-    if not short_codes:
+    if not isinstance(location, Mapping):
         return None
-    return cast(str | None, short_codes[0])
+    crs = location.get("crs")
+    if crs is not None and str(crs).strip():
+        return str(crs).strip()
+    short_codes = location.get("shortCodes")
+    if isinstance(short_codes, (list, tuple)) and len(short_codes) > 0:
+        val = short_codes[0]
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return None
+
+
+def _primary_long_code(location: Mapping[str, Any]) -> str | None:
+    if not isinstance(location, Mapping):
+        return None
+    tiploc = location.get("tiploc")
+    if tiploc is not None and str(tiploc).strip():
+        return str(tiploc).strip()
+    long_codes = location.get("longCodes")
+    if isinstance(long_codes, (list, tuple)) and len(long_codes) > 0:
+        val = long_codes[0]
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return None
+
+
+def calculate_service_status(
+    scheduled_dt: datetime,
+    estimated_dt: datetime | None,
+    is_cancelled: bool,
+) -> tuple[int | None, str, str, str, str | None]:
+    """Calculate (delay_minutes, status, status_class, status_label, offset_label)."""
+    if is_cancelled:
+        return None, "cancelled", "cancelled", "Cancelled", None
+
+    if estimated_dt is None:
+        return 0, "on_time", "on-time", "On Time", None
+
+    delay_seconds = (
+        estimated_dt.replace(second=0, microsecond=0)
+        - scheduled_dt.replace(second=0, microsecond=0)
+    ).total_seconds()
+    delay_minutes = int(round(delay_seconds / 60.0))
+    est_time = estimated_dt.strftime("%H:%M")
+
+    if abs(delay_minutes) <= 1:
+        return delay_minutes, "on_time", "on-time", "On Time", None
+    if delay_minutes < 0:
+        return delay_minutes, "early", "early", f"Early {est_time}", f"{delay_minutes}m"
+    return delay_minutes, "delayed", "delayed", f"Exp {est_time}", f"+{delay_minutes}m"
 
 
 def _select_time_source(temporal_data: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -116,56 +161,165 @@ def subsequent_stop_start_index(last_report_idx: int, last_report_type: str | No
     return last_report_idx
 
 
-def build_subsequent_stop(stop: Mapping[str, Any], fallback_tz: Any) -> dict[str, Any] | None:
-    """Build a single subsequent stop entry from a service location."""
-    temporal_data = stop.get("temporalData", {})
-    display_as = temporal_data.get("displayAs") or ""
-    if display_as not in SUBSEQUENT_STOP_DISPLAY_AS:
-        return None
-
-    location = stop.get("location", {})
-    time_source = _select_time_source(temporal_data)
-
-    scheduled_str = time_source.get("scheduleAdvertised") or time_source.get("scheduleInternal")
-    if not scheduled_str:
-        return None
-
-    estimated_str = (
-        time_source.get("realtimeActual")
-        or time_source.get("realtimeForecast")
-        or time_source.get("realtimeEstimate")
-    )
-
-    scheduled_dt = parse_rtt_datetime(scheduled_str, fallback_tz)
-    estimated_dt = parse_rtt_datetime(estimated_str, fallback_tz) if estimated_str else scheduled_dt
-
-    return {
-        "stop": _primary_short_code(location),
-        "name": location.get("description", ""),
-        "scheduled": scheduled_dt.strftime(RTT_TIME_FORMAT),
-        "estimated": estimated_dt.strftime(RTT_TIME_FORMAT),
-        "scheduled_iso": scheduled_dt.isoformat(),
-        "estimated_iso": estimated_dt.isoformat(),
-    }
-
-
-def collect_subsequent_stops(
+def build_calling_points(
     locations: Sequence[Mapping[str, Any]],
     start_index: int,
+    last_report_station: str | None,
+    last_report_type: str | None,
+    last_report_time: datetime | None,
     fallback_tz: Any,
 ) -> list[dict[str, Any]]:
-    """Collect subsequent stop entries starting from a given index."""
-    subsequent_stops: list[dict[str, Any]] = []
+    """Build the display-ready list of calling points with status and tracking."""
+    calling_points: list[dict[str, Any]] = []
 
     for idx, stop in enumerate(locations):
         if idx < start_index:
             continue
 
-        stop_data = build_subsequent_stop(stop, fallback_tz)
-        if stop_data is not None:
-            subsequent_stops.append(stop_data)
+        temporal_data = stop.get("temporalData", {})
+        display_as = temporal_data.get("displayAs") or ""
+        if display_as not in SUBSEQUENT_STOP_DISPLAY_AS:
+            continue
 
-    return subsequent_stops
+        location = stop.get("location", {})
+        time_source = _select_time_source(temporal_data)
+
+        scheduled_str = time_source.get("scheduleAdvertised") or time_source.get("scheduleInternal")
+        if not scheduled_str:
+            continue
+
+        estimated_str = (
+            time_source.get("realtimeActual")
+            or time_source.get("realtimeForecast")
+            or time_source.get("realtimeEstimate")
+        )
+
+        scheduled_dt = parse_rtt_datetime(scheduled_str, fallback_tz)
+        estimated_dt = parse_rtt_datetime(estimated_str, fallback_tz) if estimated_str else scheduled_dt
+
+        display_as_clean = str(display_as).lower()
+        status_clean = str(temporal_data.get("status") or time_source.get("status") or "").lower()
+        is_stop_cancelled = bool(
+            "cancel" in display_as_clean
+            or "cancel" in status_clean
+            or time_source.get("isCancelled")
+            or temporal_data.get("isCancelled")
+        )
+
+        est_time_str = estimated_dt.strftime("%H:%M")
+        sched_time_str = scheduled_dt.strftime("%H:%M")
+
+        if is_stop_cancelled:
+            stop_status = "cancelled"
+            stop_status_class = "cancelled"
+            stop_status_label = "Cancelled"
+            stop_delay_mins = None
+        else:
+            stop_delay_mins = int(round((estimated_dt - scheduled_dt).total_seconds() / 60.0))
+            if abs(stop_delay_mins) <= 1:
+                stop_status = "on_time"
+                stop_status_class = "on-time"
+                stop_status_label = "On time"
+            elif stop_delay_mins < 0:
+                stop_status = "early"
+                stop_status_class = "early"
+                stop_status_label = f"Early {est_time_str}"
+            else:
+                stop_status = "delayed"
+                stop_status_class = "delayed"
+                stop_status_label = f"Exp {est_time_str}"
+
+        calling_points.append(
+            {
+                "station_name": str(location.get("description") or ""),
+                "crs": _primary_short_code(location),
+                "tiploc": _primary_long_code(location),
+                "scheduled": scheduled_dt.isoformat(),
+                "estimated": estimated_dt.isoformat() if estimated_str else None,
+                "time": sched_time_str,
+                "delay_minutes": stop_delay_mins,
+                "status": stop_status,
+                "status_class": stop_status_class,
+                "status_label": stop_status_label,
+                "is_passed": False,
+                "is_current": False,
+                "is_between_previous": False,
+                "_timestamp": scheduled_dt.timestamp(),
+            }
+        )
+
+    # Sort calling points chronologically
+    calling_points.sort(key=lambda p: p["_timestamp"])
+
+    # Apply real-time position tracking if report data is available
+    exact_match_idx = -1
+    if last_report_station and last_report_type:
+        for i, point in enumerate(calling_points):
+            if (
+                point["crs"] == last_report_station
+                or point["tiploc"] == last_report_station
+                or point["station_name"] == last_report_station
+            ):
+                exact_match_idx = i
+                break
+
+        if exact_match_idx != -1:
+            for i in range(exact_match_idx):
+                calling_points[i]["is_passed"] = True
+            if last_report_type == "Arrival":
+                calling_points[exact_match_idx]["is_current"] = True
+                calling_points[exact_match_idx]["is_passed"] = False
+            else:
+                calling_points[exact_match_idx]["is_passed"] = True
+                if exact_match_idx + 1 < len(calling_points):
+                    calling_points[exact_match_idx + 1]["is_between_previous"] = True
+        elif last_report_time is not None:
+            last_passed_idx = -1
+            report_ts = last_report_time.timestamp()
+            for i, point in enumerate(calling_points):
+                if point["_timestamp"] <= report_ts:
+                    point["is_passed"] = True
+                    last_passed_idx = i
+                else:
+                    break
+            if last_passed_idx != -1 and last_passed_idx + 1 < len(calling_points):
+                calling_points[last_passed_idx + 1]["is_between_previous"] = True
+            elif last_passed_idx == -1 and len(calling_points) > 0:
+                calling_points[0]["is_between_previous"] = True
+
+        if (
+            len(calling_points) > 0
+            and calling_points[0]["is_between_previous"]
+            and exact_match_idx == -1
+            and last_report_station
+            and last_report_time is not None
+        ):
+            report_time_str = last_report_time.strftime("%H:%M")
+            report_iso = last_report_time.isoformat()
+            calling_points.insert(
+                0,
+                {
+                    "station_name": last_report_station,
+                    "crs": last_report_station,
+                    "tiploc": None,
+                    "scheduled": report_iso,
+                    "estimated": report_iso,
+                    "time": report_time_str,
+                    "delay_minutes": 0,
+                    "status": "on_time",
+                    "status_class": "on-time",
+                    "status_label": "On time",
+                    "is_passed": True,
+                    "is_current": False,
+                    "is_between_previous": False,
+                },
+            )
+
+    # Clean up temporary sort key
+    for point in calling_points:
+        point.pop("_timestamp", None)
+
+    return calling_points
 
 
 def evaluate_pinned_disruption(
@@ -176,18 +330,17 @@ def evaluate_pinned_disruption(
     if train is None:
         return False, None
 
-    if train.get("is_cancelled") or train.get("status") == "Cancelled":
+    if train.get("is_cancelled") or "cancel" in str(train.get("status") or "").lower():
         return True, "Cancelled"
 
-    try:
-        scheduled = datetime.strptime(train["scheduled"], RTT_TIME_FORMAT)
-        estimated = datetime.strptime(train["estimated"], RTT_TIME_FORMAT)
-    except (KeyError, TypeError, ValueError):
-        return False, None
-
-    delay_minutes = (estimated - scheduled).total_seconds() / 60
-    if delay_minutes >= threshold_minutes:
-        return True, f"Delayed {int(delay_minutes)} min"
+    delay_minutes = train.get("delay_minutes")
+    if delay_minutes is not None:
+        try:
+            delay_int = int(delay_minutes)
+            if delay_int >= threshold_minutes:
+                return True, f"Delayed {delay_int} min"
+        except (TypeError, ValueError):
+            pass
 
     return False, None
 

@@ -1,44 +1,46 @@
 # realtime_trains_api
 api.rtt.io Home Assistant integration
 
+> [!WARNING]
+> **Breaking Change (Contract Version 2)**
+> The integration now canonically calculates, normalizes, and enriches all railway-domain attributes (display-ready timestamps, delays, canonical statuses, calling points with live progress tracking, and destination arrival).
+> **Coordinated Upgrade Required:** The companion Lovelace card [`ha-train-departure-board`](https://github.com/ivmreg/ha-train-departure-board) must be updated to Contract v2 alongside this integration. See [CONTRACT.md](CONTRACT.md) for full schema specifications.
+
 It provides detailed live train departures and journey stats:
 
 ```yaml
-station_code: WAT
-calling_at: WAL
+contract_version: 2
+journey_start: WAT
+journey_end: WAL
 next_trains:
   - origin_name: London Waterloo
     destination_name: Basingstoke
     service_uid: Q46478
-    scheduled: 21-01-2022 20:12
-    estimated: 21-01-2022 20:12
+    headcode: "1B50"
+    type: TRAIN
+    operator_name: South Western Railway
+    scheduled: "2026-06-10T20:12:00+01:00"
+    estimated: "2026-06-10T20:12:00+01:00"
+    scheduled_time: "20:12"
+    estimated_time: "20:12"
     minutes: 3
-    platform: '10'
-    operator_name: South Western Railway
-    stops_of_interest: []
-    scheduled_arrival: 21-01-2022 20:37
-    estimate_arrival: 21-01-2022 20:36
-    journey_time_mins: 24
-    stops: 2
-  - origin_name: London Waterloo
-    destination_name: Woking
-    service_uid: Q46174
-    scheduled: 21-01-2022 20:20
-    estimated: 21-01-2022 20:20
-    minutes: 11
-    platform: '4'
-    operator_name: South Western Railway
-    stops_of_interest:
-      - stop: VXH
-        name: Vauxhall
-        scheduled_stop: 21-01-2022 20:23
-        estimate_stop: 21-01-2022 20:23
-        journey_time_mins: 3
-        stops: 0
-    scheduled_arrival: 21-01-2022 20:54
-    estimate_arrival: 21-01-2022 20:53
-    journey_time_mins: 33
-    stops: 7
+    delay_minutes: 0
+    status: on_time
+    status_class: on-time
+    status_label: "On Time"
+    offset_label: null
+    is_cancelled: false
+    platform: "10"
+    length: 8
+    stock: null
+    calling_points: []
+    destination_arrival_scheduled: "2026-06-10T20:37:00+01:00"
+    destination_arrival_estimated: "2026-06-10T20:36:00+01:00"
+    destination_arrival_time: "20:36"
+    destination_status: on_time
+    destination_delay_minutes: -1
+    journey_duration_minutes: 24
+    stops_count: 2
 unit_of_measurement: min
 icon: mdi:train
 friendly_name: Next Waterloo train data

@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from freezegun import freeze_time
@@ -124,9 +124,12 @@ async def test_coordinator_fetches_and_structures_data():
     assert "WAL_WAT_all_0" in data
     assert len(data["WAL_WAT_all_0"]["next_trains"]) == 1
     train = data["WAL_WAT_all_0"]["next_trains"][0]
-    assert "scheduled_iso" in train
-    assert "estimated_iso" in train
-    assert train["scheduled_iso"].startswith("2026-04-07T12:05:00")
+    assert "scheduled" in train
+    assert "estimated" in train
+    assert train["scheduled"].startswith("2026-04-07T12:05:00")
+    assert train["scheduled_time"] == "12:05"
+    assert "scheduled_iso" not in train
+    assert "estimated_iso" not in train
     api.fetch_location_services.assert_called_once_with(
         "WAL",
         "WAT",
@@ -360,3 +363,197 @@ async def test_enrichment_error_keeps_state_numeric():
     result = data["WAL_WAT_all_0"]
     assert result["state"] == 5
     assert result["error"] == "Rate Limited"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_journey_enrichment_canonical_contract():
+    """Verify that journey enrichment populates contract v2 fields."""
+    api = MagicMock()
+    api.fetch_location_services = AsyncMock(return_value={
+        "services": [{
+            "scheduleMetadata": {
+                "identity": "S123",
+                "inPassengerService": True,
+                "departureDate": "2026-04-07",
+                "trainReportingIdentity": "2A10",
+                "modeType": "TRAIN",
+                "operator": {"name": "Southeastern"},
+            },
+            "locationMetadata": {
+                "platform": {"actual": "2"},
+                "numberOfVehicles": 8,
+                "stockBranding": "City Beam",
+            },
+            "temporalData": {
+                "departure": {
+                    "scheduleAdvertised": "2026-04-07T12:10:00Z",
+                    "realtimeForecast": "2026-04-07T12:15:00Z",
+                }
+            },
+            "origin": [{"location": {"description": "London Cannon Street"}}],
+            "destination": [{"location": {"description": "Dartford"}}],
+        }]
+    })
+
+    api.fetch_service_details = AsyncMock(return_value={
+        "service": {
+            "reasons": [{"shortText": "Awaiting track inspection"}],
+            "locations": [
+                {
+                    "location": {"shortCodes": ["CST"], "description": "London Cannon Street"},
+                    "temporalData": {
+                        "displayAs": "ORIGIN",
+                        "departure": {"scheduleAdvertised": "2026-04-07T12:10:00Z", "realtimeActual": "2026-04-07T12:15:00Z"},
+                    },
+                },
+                {
+                    "location": {"shortCodes": ["LEW"], "description": "Lewisham"},
+                    "temporalData": {
+                        "displayAs": "CALL",
+                        "arrival": {"scheduleAdvertised": "2026-04-07T12:25:00Z", "realtimeForecast": "2026-04-07T12:29:00Z"},
+                    },
+                },
+                {
+                    "location": {"shortCodes": ["DFD"], "description": "Dartford"},
+                    "temporalData": {
+                        "displayAs": "DEST",
+                        "arrival": {"scheduleAdvertised": "2026-04-07T12:45:00Z", "realtimeForecast": "2026-04-07T12:50:00Z"},
+                    },
+                },
+            ],
+        }
+    })
+
+    coordinator = _make_coordinator(
+        api,
+        [{"origin": "CST", "destination": "DFD", "journey_data_for_next_X_trains": 1, "max_trains": 5}],
+    )
+
+    with freeze_time("2026-04-07 12:00:00"):
+        data = await coordinator._async_update_data()
+
+    query_res = data["CST_DFD_all_0"]
+    assert len(query_res["next_trains"]) == 1
+    train = query_res["next_trains"][0]
+
+    # Origin timings & status
+    assert train["scheduled_time"] == "12:10"
+    assert train["estimated_time"] == "12:15"
+    assert train["delay_minutes"] == 5
+    assert train["status"] == "delayed"
+    assert train["status_class"] == "delayed"
+    assert train["status_label"] == "Exp 12:15"
+    assert train["offset_label"] == "+5m"
+    assert train["operator_name"] == "Southeastern"
+    assert train["stock"] == "City Beam"
+
+    # Destination arrival
+    assert train["destination_arrival_time"] == "12:50"
+    assert train["destination_status"] == "delayed"
+    assert train["destination_delay_minutes"] == 5
+    assert train["journey_duration_minutes"] == 35  # 12:50 - 12:15 = 35 mins
+    assert train["stops_count"] == 1
+    assert train["disruption_reason"] == "Awaiting track inspection"
+
+    # Calling points (includes departed origin injected before first call)
+    assert len(train["calling_points"]) == 3
+    assert train["calling_points"][0]["crs"] == "CST"
+    assert train["calling_points"][0]["is_passed"] is True
+    assert train["calling_points"][1]["crs"] == "LEW"
+    assert train["calling_points"][1]["station_name"] == "Lewisham"
+    assert train["calling_points"][1]["time"] == "12:25"
+    assert train["calling_points"][1]["status"] == "delayed"
+    assert train["calling_points"][1]["status_label"] == "Exp 12:29"
+    assert train["calling_points"][1]["is_between_previous"] is True
+    assert train["calling_points"][2]["crs"] == "DFD"
+    assert train["calling_points"][2]["station_name"] == "Dartford"
+    assert train["calling_points"][2]["status_label"] == "Exp 12:50"
+
+    for legacy_field in [
+        "scheduled_iso",
+        "estimated_iso",
+        "subsequent_stops",
+        "reason",
+        "scheduled_arrival",
+        "estimate_arrival",
+        "scheduled_arrival_iso",
+        "estimate_arrival_iso",
+        "journey_time_mins",
+        "stops",
+        "last_report_time_iso",
+    ]:
+        assert legacy_field not in train
+
+
+def test_build_train_field_type_normalization():
+    now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+    scheduled_dt = datetime(2026, 4, 7, 12, 10, tzinfo=timezone.utc)
+    estimated_dt = datetime(2026, 4, 7, 12, 10, tzinfo=timezone.utc)
+
+    # All primitives None or uncoercible or non-string
+    raw_departure = {
+        "origin": [],
+        "destination": [],
+        "scheduleMetadata": {
+            "identity": None,
+            "trainReportingIdentity": 1234,  # non-string int
+            "modeType": None,
+            "operator": {"name": None},
+        },
+        "locationMetadata": {
+            "platform": {"actual": "  "},  # whitespace
+            "stockBranding": "   ",  # whitespace
+            "numberOfVehicles": "invalid",  # non-int
+        },
+        "temporalData": {
+            "departure": {
+                "realtimeAdvertisedLateness": "not_an_int",
+            }
+        },
+    }
+
+    train = RealtimeTrainsUpdateCoordinator._build_train(
+        raw_departure, scheduled_dt, estimated_dt, now, platform="  "
+    )
+
+    # Documented always-present primitive strings
+    assert isinstance(train["origin_name"], str) and train["origin_name"] == ""
+    assert isinstance(train["destination_name"], str) and train["destination_name"] == ""
+    assert isinstance(train["service_uid"], str) and train["service_uid"] == ""
+    assert isinstance(train["headcode"], str) and train["headcode"] == "1234"
+    assert isinstance(train["type"], str) and train["type"] == ""
+    assert isinstance(train["operator_name"], str) and train["operator_name"] == ""
+
+    # Platform and stock should be string-or-null
+    assert train["platform"] is None
+    assert train["stock"] is None
+
+    # Length and lateness integer-or-null
+    assert train["length"] is None
+    assert train["lateness"] is None
+
+    # Test valid coercible values
+    raw_valid = {
+        "scheduleMetadata": {
+            "identity": "P123",
+            "trainReportingIdentity": "2A69",
+            "modeType": "TRAIN",
+            "operator": {"name": "Southeastern"},
+        },
+        "locationMetadata": {
+            "stockBranding": "City Beam",
+            "numberOfVehicles": "8",  # coercible string int
+        },
+        "temporalData": {
+            "departure": {
+                "realtimeAdvertisedLateness": "3",  # coercible string int
+            }
+        },
+    }
+    train_valid = RealtimeTrainsUpdateCoordinator._build_train(
+        raw_valid, scheduled_dt, estimated_dt, now, platform=1
+    )
+    assert train_valid["platform"] == "1"
+    assert train_valid["stock"] == "City Beam"
+    assert train_valid["length"] == 8
+    assert train_valid["lateness"] == 3
