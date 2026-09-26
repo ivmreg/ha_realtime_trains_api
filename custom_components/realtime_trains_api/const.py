@@ -65,10 +65,38 @@ SERVICE_STATUS_ALL = {
     SERVICE_STATUS_NO_DEPARTURES,
 }
 
+# Knowledgebase (KB) connection status enum:
+# - not_configured: Either KB username or password is not configured or blank.
+# - pending: Credentials are configured, waiting for first connection attempt.
+# - connected: Successfully authenticated and parsed an HTTP 200 incidents feed response.
+# - authentication_failed: Credentials rejected by authentication endpoint (HTTP 401/403 or invalid credentials).
+# - feed_error: Incidents feed endpoint returned an HTTP error status (e.g. 500, 502, 503, 404).
+# - request_error: Network or connection error (e.g. timeout, DNS resolution failure, connection reset).
+# - invalid_response: Response payload could not be parsed (e.g. malformed XML, missing auth token).
+KB_STATUS_NOT_CONFIGURED = "not_configured"
+KB_STATUS_PENDING = "pending"
+KB_STATUS_CONNECTED = "connected"
+KB_STATUS_AUTHENTICATION_FAILED = "authentication_failed"
+KB_STATUS_FEED_ERROR = "feed_error"
+KB_STATUS_REQUEST_ERROR = "request_error"
+KB_STATUS_INVALID_RESPONSE = "invalid_response"
+
+KB_STATUS_ALL = {
+    KB_STATUS_NOT_CONFIGURED,
+    KB_STATUS_PENDING,
+    KB_STATUS_CONNECTED,
+    KB_STATUS_AUTHENTICATION_FAILED,
+    KB_STATUS_FEED_ERROR,
+    KB_STATUS_REQUEST_ERROR,
+    KB_STATUS_INVALID_RESPONSE,
+}
+
 # Sensor attributes
 ATTR_SERVICE_STATUS = "service_status"
 ATTR_STATION_MESSAGES = "station_messages"
 ATTR_DISRUPTIONS = "disruptions"
+ATTR_KB_CONNECTION_STATUS = "kb_connection_status"
+ATTR_KB_LAST_SUCCESSFUL_CHECK = "kb_last_successful_check"
 
 # Disruption cache TTL (15 minutes)
 DEFAULT_DISRUPTION_CACHE_SECONDS = 900

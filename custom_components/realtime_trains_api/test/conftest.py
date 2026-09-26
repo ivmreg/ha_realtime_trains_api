@@ -179,6 +179,8 @@ util_dt.now = _now
 
 aiohttp.ClientSession = type("ClientSession", (object,), {})
 aiohttp.BasicAuth = FakeBasicAuth
+aiohttp.ClientError = type("ClientError", (Exception,), {"__init__": lambda self, *args, **kwargs: None})
+aiohttp.ClientConnectorError = type("ClientConnectorError", (aiohttp.ClientError,), {"__init__": lambda self, *args, **kwargs: None})
 
 
 def pytest_configure(config):

@@ -225,6 +225,7 @@ def test_sensor_unrecorded_attributes_and_empty_next_trains():
         ATTR_ERROR,
         ATTR_STATION_MESSAGES,
         ATTR_DISRUPTIONS,
+        ATTR_KB_LAST_SUCCESSFUL_CHECK,
     )
 
     expected_unrecorded = frozenset(
@@ -235,6 +236,7 @@ def test_sensor_unrecorded_attributes_and_empty_next_trains():
             ATTR_LAST_SUCCESSFUL_UPDATE,
             ATTR_STATION_MESSAGES,
             ATTR_DISRUPTIONS,
+            ATTR_KB_LAST_SUCCESSFUL_CHECK,
         }
     )
     assert RealtimeTrainLiveTrainTimeSensor._unrecorded_attributes == expected_unrecorded

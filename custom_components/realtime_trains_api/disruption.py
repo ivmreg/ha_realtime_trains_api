@@ -23,6 +23,13 @@ from .const import (
     SERVICE_STATUS_ENGINEERING_WORK,
     SERVICE_STATUS_STATION_CLOSED,
     SERVICE_STATUS_NO_DEPARTURES,
+    KB_STATUS_NOT_CONFIGURED,
+    KB_STATUS_PENDING,
+    KB_STATUS_CONNECTED,
+    KB_STATUS_AUTHENTICATION_FAILED,
+    KB_STATUS_FEED_ERROR,
+    KB_STATUS_REQUEST_ERROR,
+    KB_STATUS_INVALID_RESPONSE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -639,7 +646,17 @@ class DarwinLdbClient:
 
 
 class KnowledgeBaseClient:
-    """Client for National Rail Knowledgebase Incidents XML static feed."""
+    """Client for National Rail Knowledgebase Incidents XML static feed.
+
+    Tracks connection status across:
+    - not_configured: Either username or password credential is absent or blank.
+    - pending: Credentials are configured, waiting for first connection attempt.
+    - connected: Successfully authenticated and parsed an HTTP 200 incidents feed response.
+    - authentication_failed: Credentials rejected by authentication endpoint (HTTP 401/403).
+    - feed_error: Incidents feed endpoint returned an HTTP error status (e.g. 500, 502, 503, 404).
+    - request_error: Network or connection error (e.g. timeout, connection reset).
+    - invalid_response: Response payload could not be parsed or token missing in auth response.
+    """
 
     def __init__(
         self,
@@ -655,10 +672,62 @@ class KnowledgeBaseClient:
         self.endpoint_url = endpoint_url
         self.auth_url = auth_url
         self._auth_token: str | None = None
+        self._status: str = (
+            KB_STATUS_PENDING
+            if (self.username and self.password)
+            else KB_STATUS_NOT_CONFIGURED
+        )
+        self._last_successful_check: datetime | None = None
+
+    @property
+    def status(self) -> str:
+        """Return the current connection status."""
+        return self._status
+
+    @property
+    def last_successful_check(self) -> datetime | None:
+        """Return the timestamp of the last successful incidents feed check."""
+        return self._last_successful_check
+
+    def _set_status(self, new_status: str, detail: str | None = None) -> None:
+        """Update connection status and log transitions without exposing secrets."""
+        old_status = self._status
+        if old_status == new_status:
+            return
+
+        self._status = new_status
+        if new_status == KB_STATUS_CONNECTED:
+            _LOGGER.info("Knowledgebase connection status: %s -> %s", old_status, new_status)
+        elif new_status in (
+            KB_STATUS_AUTHENTICATION_FAILED,
+            KB_STATUS_FEED_ERROR,
+            KB_STATUS_REQUEST_ERROR,
+            KB_STATUS_INVALID_RESPONSE,
+        ):
+            if detail:
+                _LOGGER.warning(
+                    "Knowledgebase connection status: %s -> %s (%s)",
+                    old_status,
+                    new_status,
+                    detail,
+                )
+            else:
+                _LOGGER.warning(
+                    "Knowledgebase connection status: %s -> %s",
+                    old_status,
+                    new_status,
+                )
+        else:
+            _LOGGER.debug(
+                "Knowledgebase connection status: %s -> %s",
+                old_status,
+                new_status,
+            )
 
     async def _authenticate(self) -> str | None:
         """Authenticate via POST form-urlencoded to obtain an auth token."""
         if not self.username or not self.password:
+            self._set_status(KB_STATUS_NOT_CONFIGURED)
             return None
 
         payload = {
@@ -674,11 +743,14 @@ class KnowledgeBaseClient:
                 data=payload,
                 headers=headers,
             ) as response:
-                if response.status != 200:
-                    _LOGGER.debug(
-                        "Knowledgebase authentication failed with status %s",
-                        response.status,
-                    )
+                if response.status in (401, 403):
+                    self._set_status(KB_STATUS_AUTHENTICATION_FAILED, f"HTTP {response.status}")
+                    return None
+                elif response.status != 200:
+                    if response.status < 500:
+                        self._set_status(KB_STATUS_AUTHENTICATION_FAILED, f"HTTP {response.status}")
+                    else:
+                        self._set_status(KB_STATUS_FEED_ERROR, f"HTTP {response.status}")
                     return None
 
                 # 1. Check response header for token
@@ -694,6 +766,7 @@ class KnowledgeBaseClient:
                 # 2. Check response body
                 text = await response.text()
                 if not text:
+                    self._set_status(KB_STATUS_INVALID_RESPONSE, "Empty auth response")
                     return None
 
                 content_type = response.headers.get("Content-Type", "").lower()
@@ -711,6 +784,25 @@ class KnowledgeBaseClient:
                                 or data.get("id")
                                 or data.get("access_token")
                             )
+                            if not token:
+                                err = (
+                                    data.get("error")
+                                    or data.get("error_description")
+                                    or data.get("message")
+                                )
+                                if isinstance(err, str):
+                                    err_lower = err.strip().lower()
+                                    if (
+                                        "invalid username" in err_lower
+                                        or "invalid password" in err_lower
+                                        or "invalid credentials" in err_lower
+                                        or "unauthorized" in err_lower
+                                    ):
+                                        self._set_status(
+                                            KB_STATUS_AUTHENTICATION_FAILED,
+                                            "invalid credentials",
+                                        )
+                                        return None
                     except Exception:
                         pass
 
@@ -726,25 +818,31 @@ class KnowledgeBaseClient:
                     except Exception:
                         pass
 
-                # Plain text format
-                if not token:
+                # Plain text format (only when not JSON or XML)
+                is_json = "json" in content_type or text.strip().startswith("{")
+                is_xml = "xml" in content_type or text.strip().startswith("<")
+                if not token and not is_json and not is_xml:
                     candidate = text.strip().strip('"').strip("'")
-                    if candidate and "\n" not in candidate and "<" not in candidate:
+                    if candidate and "\n" not in candidate and "<" not in candidate and "{" not in candidate:
                         token = candidate
 
                 if token:
                     self._auth_token = str(token).strip()
                     return self._auth_token
 
-                _LOGGER.debug("Could not extract token from Knowledgebase authentication response")
+                self._set_status(KB_STATUS_INVALID_RESPONSE, "Token missing in auth response")
                 return None
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            self._set_status(KB_STATUS_REQUEST_ERROR, type(err).__name__)
+            return None
         except Exception as err:
-            _LOGGER.debug("Error during Knowledgebase authentication: %s", err)
+            self._set_status(KB_STATUS_REQUEST_ERROR, type(err).__name__)
             return None
 
     async def fetch_incidents(self) -> list[dict[str, Any]]:
         """Fetch and parse incidents from Knowledgebase XML feed."""
         if not self.username or not self.password:
+            self._set_status(KB_STATUS_NOT_CONFIGURED)
             return []
 
         # Obtain token (cached or fresh)
@@ -761,53 +859,76 @@ class KnowledgeBaseClient:
             ) as response:
                 # Handle token expiry / 401 or 403
                 if response.status in (401, 403):
-                    _LOGGER.debug(
-                        "Knowledgebase returned status %s; refreshing token...",
-                        response.status,
-                    )
                     self._auth_token = None
                     token = await self._authenticate()
                     if not token:
                         return []
                     retry_headers = {"X-Auth-Token": token}
-                    async with self.session.get(
-                        self.endpoint_url,
-                        headers=retry_headers,
-                    ) as retry_resp:
-                        if retry_resp.status != 200:
-                            _LOGGER.debug(
-                                "Knowledgebase incidents feed returned status %s after refresh",
-                                retry_resp.status,
-                            )
-                            return []
-                        content = await retry_resp.read()
-                        return self._parse_incidents(content)
+                    try:
+                        async with self.session.get(
+                            self.endpoint_url,
+                            headers=retry_headers,
+                        ) as retry_resp:
+                            if retry_resp.status in (401, 403):
+                                self._set_status(KB_STATUS_AUTHENTICATION_FAILED, f"HTTP {retry_resp.status}")
+                                return []
+                            if retry_resp.status != 200:
+                                self._set_status(KB_STATUS_FEED_ERROR, f"HTTP {retry_resp.status}")
+                                return []
+                            content = await retry_resp.read()
+                            return self._process_feed_content(content)
+                    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+                        self._set_status(KB_STATUS_REQUEST_ERROR, type(err).__name__)
+                        return []
+                    except Exception as err:
+                        self._set_status(KB_STATUS_REQUEST_ERROR, type(err).__name__)
+                        return []
 
                 if response.status != 200:
-                    _LOGGER.debug(
-                        "Knowledgebase incidents feed returned status %s",
-                        response.status,
-                    )
+                    self._set_status(KB_STATUS_FEED_ERROR, f"HTTP {response.status}")
                     return []
 
                 content = await response.read()
-                return self._parse_incidents(content)
-        except Exception as err:
-            _LOGGER.debug("Error fetching Knowledgebase incidents: %s", err)
+                return self._process_feed_content(content)
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            self._set_status(KB_STATUS_REQUEST_ERROR, type(err).__name__)
             return []
+        except Exception as err:
+            self._set_status(KB_STATUS_REQUEST_ERROR, type(err).__name__)
+            return []
+
+    def _process_feed_content(self, content: bytes) -> list[dict[str, Any]]:
+        """Parse feed XML, update status to connected on success, or invalid_response on parse error."""
+        if not content or not content.strip():
+            self._set_status(KB_STATUS_INVALID_RESPONSE, "Empty feed response")
+            return []
+
+        try:
+            incidents = self._parse_incidents(content)
+        except Exception:
+            self._set_status(KB_STATUS_INVALID_RESPONSE, "XML parse error")
+            return []
+
+        self._last_successful_check = datetime.now(timezone.utc)
+        self._set_status(KB_STATUS_CONNECTED)
+        return incidents
 
     def _parse_incidents(self, xml_bytes: bytes) -> list[dict[str, Any]]:
         """Parse PtIncident and PtIncidentStructure elements into structured incident objects."""
-        try:
-            root = parse_xml_robust(xml_bytes)
-        except Exception as err:
-            _LOGGER.debug("Failed to parse Knowledgebase XML: %s", err)
-            return []
+        root = parse_xml_robust(xml_bytes)
+
+        target_tags = {"ptincident", "ptincidentstructure"}
+        root_tag = local_tag(root).lower()
+
+        # Validate that the XML root is an expected incidents element or container
+        if root_tag not in {"incidents", "ptincident", "ptincidentstructure"} and not any(
+            local_tag(child).lower() in target_tags for child in root
+        ):
+            raise ValueError(f"Unexpected XML root tag: {root_tag}")
 
         incidents: list[dict[str, Any]] = []
-        target_tags = {"ptincident", "ptincidentstructure"}
 
-        if local_tag(root).lower() in target_tags:
+        if root_tag in target_tags:
             incident = self._parse_single_incident(root)
             if incident:
                 incidents.append(incident)
@@ -1039,6 +1160,28 @@ class DisruptionManager:
         self._station_messages_cache: dict[str, tuple[float, list[str]]] = {}
         # (cached_time_epoch, list of parsed KB incident dicts)
         self._kb_incidents_cache: tuple[float, list[dict[str, Any]]] | None = None
+        # (cached_time_epoch, failure_status) for short error backoff deduplication
+        self._kb_failure_cache: tuple[float, str] | None = None
+
+    @property
+    def kb_connection_status(self) -> str:
+        """Return the current Knowledgebase connection status."""
+        if not self.kb_client:
+            return KB_STATUS_NOT_CONFIGURED
+        status = getattr(self.kb_client, "status", None)
+        if isinstance(status, str):
+            return status
+        return KB_STATUS_NOT_CONFIGURED
+
+    @property
+    def kb_last_successful_check(self) -> datetime | None:
+        """Return the timestamp of the last successful Knowledgebase check."""
+        if not self.kb_client:
+            return None
+        last_check = getattr(self.kb_client, "last_successful_check", None)
+        if isinstance(last_check, datetime):
+            return last_check
+        return None
 
     async def get_station_messages(self, crs: str) -> list[str]:
         """Get cached or fresh Darwin station messages."""
@@ -1063,8 +1206,19 @@ class DisruptionManager:
         if self._kb_incidents_cache and (now_epoch - self._kb_incidents_cache[0]) < self.cache_ttl:
             return self._kb_incidents_cache[1]
 
+        # Prevent hammer during error window across simultaneous queries
+        if self._kb_failure_cache and (now_epoch - self._kb_failure_cache[0]) < min(self.cache_ttl, 30):
+            return []
+
         incidents = await self.kb_client.fetch_incidents()
-        self._kb_incidents_cache = (now_epoch, incidents)
+        status = getattr(self.kb_client, "status", None)
+        if not isinstance(status, str) or status == KB_STATUS_CONNECTED:
+            self._kb_incidents_cache = (now_epoch, incidents)
+            self._kb_failure_cache = None
+        else:
+            # On failure, clear success cache so failed refresh does not leave stale connected status
+            self._kb_incidents_cache = None
+            self._kb_failure_cache = (now_epoch, str(status))
         return incidents
 
     async def get_disruptions_for_query(

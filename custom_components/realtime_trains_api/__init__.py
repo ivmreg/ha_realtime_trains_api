@@ -74,7 +74,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     darwin_client = DarwinLdbClient(client, openldbws_token) if openldbws_token else None
     kb_client = (
         KnowledgeBaseClient(client, kb_username, kb_password)
-        if (kb_username and kb_password)
+        if (kb_username or kb_password)
         else None
     )
     disruption_manager = DisruptionManager(darwin_client, kb_client)

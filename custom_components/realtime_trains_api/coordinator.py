@@ -21,6 +21,7 @@ from .const import (
     DEFAULT_LOOKBACK_MINUTES,
     DEFAULT_MAX_TRAINS,
     NO_TRAINS_BACKOFF_SECONDS,
+    KB_STATUS_NOT_CONFIGURED,
 )
 from .sensor_helpers import (
     build_query_key,
@@ -475,10 +476,18 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             )
         except Exception as err:
-            _LOGGER.debug("Disruption fetch failed for %s: %s", origin, err)
+            _LOGGER.debug("Disruption fetch failed for %s: %s", origin, type(err).__name__)
             service_status = compute_service_status(next_trains, [], [])
             station_messages = []
             disruptions = []
+
+        kb_status = getattr(self.disruption_manager, "kb_connection_status", KB_STATUS_NOT_CONFIGURED)
+        if not isinstance(kb_status, str):
+            kb_status = KB_STATUS_NOT_CONFIGURED
+        kb_last_check = getattr(self.disruption_manager, "kb_last_successful_check", None)
+        kb_last_check_str = (
+            kb_last_check.isoformat() if isinstance(kb_last_check, datetime) else None
+        )
 
         return query_key, {
             "state": state,
@@ -491,6 +500,8 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "service_status": service_status,
             "station_messages": station_messages,
             "disruptions": disruptions,
+            "kb_connection_status": kb_status,
+            "kb_last_successful_check": kb_last_check_str,
         }
 
     async def _enrich_journey_data(

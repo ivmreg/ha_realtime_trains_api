@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
+import aiohttp
 import pytest
 
 from custom_components.realtime_trains_api.disruption import (
@@ -31,6 +32,15 @@ from custom_components.realtime_trains_api.const import (
     SERVICE_STATUS_ENGINEERING_WORK,
     SERVICE_STATUS_STATION_CLOSED,
     SERVICE_STATUS_NO_DEPARTURES,
+    KB_STATUS_NOT_CONFIGURED,
+    KB_STATUS_PENDING,
+    KB_STATUS_CONNECTED,
+    KB_STATUS_AUTHENTICATION_FAILED,
+    KB_STATUS_FEED_ERROR,
+    KB_STATUS_REQUEST_ERROR,
+    KB_STATUS_INVALID_RESPONSE,
+    ATTR_KB_CONNECTION_STATUS,
+    ATTR_KB_LAST_SUCCESSFUL_CHECK,
 )
 
 
@@ -285,12 +295,16 @@ async def test_darwin_client_parsing():
 async def test_knowledgebase_client_no_credentials():
     session = MagicMock()
     client = KnowledgeBaseClient(session, username=None, password=None)
+    assert client.status == KB_STATUS_NOT_CONFIGURED
     assert await client.fetch_incidents() == []
+    assert client.status == KB_STATUS_NOT_CONFIGURED
     session.post.assert_not_called()
     session.get.assert_not_called()
 
     client_empty = KnowledgeBaseClient(session, username="", password="")
+    assert client_empty.status == KB_STATUS_NOT_CONFIGURED
     assert await client_empty.fetch_incidents() == []
+    assert client_empty.status == KB_STATUS_NOT_CONFIGURED
     session.post.assert_not_called()
     session.get.assert_not_called()
 
@@ -351,7 +365,10 @@ async def test_knowledgebase_client_auth_and_caching():
     client = KnowledgeBaseClient(session, username="myuser", password="mypassword")
 
     # 1. First call: authenticates via POST form-urlencoded and gets feed
+    assert client.status == KB_STATUS_PENDING
     incidents = await client.fetch_incidents()
+    assert client.status == KB_STATUS_CONNECTED
+    assert client.last_successful_check is not None
     assert len(incidents) == 1
     assert incidents[0]["id"] == "INC001"
     assert incidents[0]["title"] == "Disruption between Lewisham and London Bridge"
@@ -440,9 +457,11 @@ async def test_knowledgebase_client_auth_failure_graceful():
     session.post.return_value = mock_auth_ctx
 
     client = KnowledgeBaseClient(session, username="baduser", password="badpassword")
+    assert client.status == KB_STATUS_PENDING
     incidents = await client.fetch_incidents()
     # Must return empty list gracefully without throwing
     assert incidents == []
+    assert client.status == KB_STATUS_AUTHENTICATION_FAILED
 
 
 @pytest.mark.asyncio
@@ -468,8 +487,10 @@ async def test_knowledgebase_client_feed_failure_graceful():
     session.get.return_value = mock_feed_ctx
 
     client = KnowledgeBaseClient(session, username="myuser", password="mypassword")
+    assert client.status == KB_STATUS_PENDING
     incidents = await client.fetch_incidents()
     assert incidents == []
+    assert client.status == KB_STATUS_FEED_ERROR
 
 
 def test_knowledgebase_parse_pt_incident_structure():
@@ -1022,4 +1043,578 @@ def test_compute_service_status_destination_closure_disrupted():
     )
 
 
+# =========================================================================
+# Focused tests for Knowledgebase (KB) API Connection Observability
+# =========================================================================
 
+@pytest.mark.asyncio
+async def test_kb_connection_status_connected():
+    """Verify status is 'connected' and last_successful_check is set after successful fetch."""
+    sample_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="INC101">
+    <Summary>Disruption between Victoria and Clapham Junction</Summary>
+    <Affects><Station><CrsCode>VIC</CrsCode></Station></Affects>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "valid-token-123"}
+    mock_auth_resp.text.return_value = ""
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = sample_xml
+
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+    session.get.return_value = mock_feed_ctx
+
+    client = KnowledgeBaseClient(session, username="test_user", password="test_password")
+    assert client.status == KB_STATUS_PENDING
+    assert client.last_successful_check is None
+
+    manager = DisruptionManager(kb_client=client)
+    assert manager.kb_connection_status == KB_STATUS_PENDING
+    assert manager.kb_last_successful_check is None
+
+    incidents = await manager.get_kb_incidents()
+    assert len(incidents) == 1
+    assert incidents[0]["id"] == "INC101"
+
+    # Status transitions to connected
+    assert client.status == KB_STATUS_CONNECTED
+    assert client.last_successful_check is not None
+    assert isinstance(client.last_successful_check, datetime)
+    assert client.last_successful_check.tzinfo is not None
+
+    # Manager exposes identical status and check timestamp
+    assert manager.kb_connection_status == KB_STATUS_CONNECTED
+    assert manager.kb_last_successful_check == client.last_successful_check
+
+
+@pytest.mark.asyncio
+async def test_kb_connection_status_no_active_incidents():
+    """Verify status is 'connected' when feed returns 200 with 0 incidents."""
+    sample_empty_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+</Incidents>"""
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "valid-token-empty"}
+    mock_auth_resp.text.return_value = ""
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = sample_empty_xml
+
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+    session.get.return_value = mock_feed_ctx
+
+    client = KnowledgeBaseClient(session, username="test_user", password="test_password")
+    incidents = await client.fetch_incidents()
+
+    assert incidents == []
+    # Status is connected because auth succeeded AND 200 XML incidents response parsed cleanly
+    assert client.status == KB_STATUS_CONNECTED
+    assert client.last_successful_check is not None
+
+
+@pytest.mark.asyncio
+async def test_kb_connection_status_bad_portal_password():
+    """Verify bad portal password (401/403) sets status to 'authentication_failed'."""
+    # Test HTTP 401
+    mock_401_resp = AsyncMock()
+    mock_401_resp.status = 401
+    mock_401_resp.text.return_value = "Unauthorized"
+
+    mock_401_ctx = MagicMock()
+    mock_401_ctx.__aenter__ = AsyncMock(return_value=mock_401_resp)
+    mock_401_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session_401 = MagicMock()
+    session_401.post.return_value = mock_401_ctx
+
+    client_401 = KnowledgeBaseClient(session_401, username="bad_user", password="bad_password")
+    manager_401 = DisruptionManager(kb_client=client_401)
+
+    incidents_401 = await manager_401.get_kb_incidents()
+    assert incidents_401 == []
+    assert client_401.status == KB_STATUS_AUTHENTICATION_FAILED
+    assert manager_401.kb_connection_status == KB_STATUS_AUTHENTICATION_FAILED
+    assert manager_401.kb_last_successful_check is None
+
+    # Test HTTP 403
+    mock_403_resp = AsyncMock()
+    mock_403_resp.status = 403
+    mock_403_resp.text.return_value = "Forbidden"
+
+    mock_403_ctx = MagicMock()
+    mock_403_ctx.__aenter__ = AsyncMock(return_value=mock_403_resp)
+    mock_403_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session_403 = MagicMock()
+    session_403.post.return_value = mock_403_ctx
+
+    client_403 = KnowledgeBaseClient(session_403, username="user", password="forbidden_password")
+    incidents_403 = await client_403.fetch_incidents()
+    assert incidents_403 == []
+    assert client_403.status == KB_STATUS_AUTHENTICATION_FAILED
+
+
+@pytest.mark.asyncio
+async def test_kb_connection_status_auth_200_json_error(caplog):
+    """Verify HTTP 200 response with documented invalid credentials JSON body sets authentication_failed."""
+    caplog.set_level(logging.DEBUG)
+
+    sensitive_user = "secret_kb_username_xyz"
+    sensitive_pass = "secret_kb_password_123"
+
+    # National Rail Data Portal documents: {"error":"Invalid username/password"} with HTTP 200
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"Content-Type": "application/json"}
+    mock_auth_resp.text.return_value = '{"error":"Invalid username/password"}'
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+
+    client = KnowledgeBaseClient(session, username=sensitive_user, password=sensitive_pass)
+    manager = DisruptionManager(kb_client=client)
+
+    incidents = await manager.get_kb_incidents()
+    assert incidents == []
+    assert client.status == KB_STATUS_AUTHENTICATION_FAILED
+    assert manager.kb_connection_status == KB_STATUS_AUTHENTICATION_FAILED
+    assert manager.kb_last_successful_check is None
+
+    # Verify logging: records transition to authentication_failed without leaking credentials or raw response text
+    log_text = caplog.text
+    assert "pending -> authentication_failed (invalid credentials)" in log_text
+    assert sensitive_user not in log_text
+    assert sensitive_pass not in log_text
+    assert "Invalid username/password" not in log_text
+
+
+@pytest.mark.asyncio
+async def test_kb_connection_status_network_failure():
+    """Verify network connection errors set status to 'request_error'."""
+    session = MagicMock()
+    session.post.side_effect = aiohttp.ClientConnectorError(
+        connection_key=MagicMock(), os_error=OSError("Connection refused")
+    )
+
+    client = KnowledgeBaseClient(session, username="test_user", password="test_password")
+    manager = DisruptionManager(kb_client=client)
+
+    incidents = await manager.get_kb_incidents()
+    assert incidents == []
+    assert client.status == KB_STATUS_REQUEST_ERROR
+    assert manager.kb_connection_status == KB_STATUS_REQUEST_ERROR
+    assert manager.kb_last_successful_check is None
+
+
+@pytest.mark.asyncio
+async def test_kb_connection_status_feed_failure():
+    """Verify feed server errors (HTTP 500, 502, 503) set status to 'feed_error'."""
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "valid-token"}
+    mock_auth_resp.text.return_value = ""
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 503
+
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+    session.get.return_value = mock_feed_ctx
+
+    client = KnowledgeBaseClient(session, username="test_user", password="test_password")
+    manager = DisruptionManager(kb_client=client)
+
+    incidents = await manager.get_kb_incidents()
+    assert incidents == []
+    assert client.status == KB_STATUS_FEED_ERROR
+    assert manager.kb_connection_status == KB_STATUS_FEED_ERROR
+
+
+@pytest.mark.asyncio
+async def test_kb_connection_status_invalid_response():
+    """Verify unparseable responses set status to 'invalid_response'."""
+    # 1. Feed returns 200 with invalid XML syntax
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "valid-token"}
+    mock_auth_resp.text.return_value = ""
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_bad_xml = AsyncMock()
+    mock_feed_bad_xml.status = 200
+    mock_feed_bad_xml.read.return_value = b"<Incidents><unclosed tag"
+
+    mock_feed_bad_ctx = MagicMock()
+    mock_feed_bad_ctx.__aenter__ = AsyncMock(return_value=mock_feed_bad_xml)
+    mock_feed_bad_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session1 = MagicMock()
+    session1.post.return_value = mock_auth_ctx
+    session1.get.return_value = mock_feed_bad_ctx
+
+    client1 = KnowledgeBaseClient(session1, username="user", password="password")
+    assert await client1.fetch_incidents() == []
+    assert client1.status == KB_STATUS_INVALID_RESPONSE
+
+    # 2. Feed returns 200 with HTML error page
+    mock_feed_html = AsyncMock()
+    mock_feed_html.status = 200
+    mock_feed_html.read.return_value = b"<html><body>502 Bad Gateway</body></html>"
+
+    mock_feed_html_ctx = MagicMock()
+    mock_feed_html_ctx.__aenter__ = AsyncMock(return_value=mock_feed_html)
+    mock_feed_html_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session2 = MagicMock()
+    session2.post.return_value = mock_auth_ctx
+    session2.get.return_value = mock_feed_html_ctx
+
+    client2 = KnowledgeBaseClient(session2, username="user", password="password")
+    assert await client2.fetch_incidents() == []
+    assert client2.status == KB_STATUS_INVALID_RESPONSE
+
+    # 3. Auth returns 200 with no token in body or header
+    mock_auth_no_token = AsyncMock()
+    mock_auth_no_token.status = 200
+    mock_auth_no_token.headers = {"Content-Type": "application/json"}
+    mock_auth_no_token.text.return_value = '{"status": "ok"}'
+
+    mock_auth_no_token_ctx = MagicMock()
+    mock_auth_no_token_ctx.__aenter__ = AsyncMock(return_value=mock_auth_no_token)
+    mock_auth_no_token_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session3 = MagicMock()
+    session3.post.return_value = mock_auth_no_token_ctx
+
+    client3 = KnowledgeBaseClient(session3, username="user", password="password")
+    assert await client3.fetch_incidents() == []
+    assert client3.status == KB_STATUS_INVALID_RESPONSE
+
+
+@pytest.mark.asyncio
+async def test_kb_connection_status_missing_credentials():
+    """Verify missing or partial credentials result in 'not_configured' status."""
+    session = MagicMock()
+
+    # Neither username nor password
+    c1 = KnowledgeBaseClient(session, username=None, password=None)
+    assert c1.status == KB_STATUS_NOT_CONFIGURED
+    assert await c1.fetch_incidents() == []
+    assert c1.status == KB_STATUS_NOT_CONFIGURED
+
+    # Only username provided
+    c2 = KnowledgeBaseClient(session, username="only_user", password=None)
+    assert c2.status == KB_STATUS_NOT_CONFIGURED
+    assert await c2.fetch_incidents() == []
+    assert c2.status == KB_STATUS_NOT_CONFIGURED
+
+    # Only password provided
+    c3 = KnowledgeBaseClient(session, username=None, password="only_password")
+    assert c3.status == KB_STATUS_NOT_CONFIGURED
+    assert await c3.fetch_incidents() == []
+    assert c3.status == KB_STATUS_NOT_CONFIGURED
+
+    # DisruptionManager with no kb_client
+    dm_none = DisruptionManager(kb_client=None)
+    assert dm_none.kb_connection_status == KB_STATUS_NOT_CONFIGURED
+    assert dm_none.kb_last_successful_check is None
+    assert await dm_none.get_kb_incidents() == []
+
+    # DisruptionManager with unconfigured kb_client
+    dm_unconfigured = DisruptionManager(kb_client=c1)
+    assert dm_unconfigured.kb_connection_status == KB_STATUS_NOT_CONFIGURED
+    assert dm_unconfigured.kb_last_successful_check is None
+
+    session.post.assert_not_called()
+    session.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_kb_connection_status_failed_refresh_clears_connected():
+    """Ensure a failed refresh immediately changes status from connected and does not serve stale data."""
+    sample_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="INC999">
+    <Summary>Incident 999</Summary>
+    <Affects><Station><CrsCode>VIC</CrsCode></Station></Affects>
+  </PtIncident>
+</Incidents>"""
+
+    # Auth returns good token
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "token-1"}
+    mock_auth_resp.text.return_value = ""
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    # First feed response: 200 OK
+    mock_feed_200 = AsyncMock()
+    mock_feed_200.status = 200
+    mock_feed_200.read.return_value = sample_xml
+
+    mock_feed_200_ctx = MagicMock()
+    mock_feed_200_ctx.__aenter__ = AsyncMock(return_value=mock_feed_200)
+    mock_feed_200_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    # Second feed response: 500 Internal Server Error
+    mock_feed_500 = AsyncMock()
+    mock_feed_500.status = 500
+
+    mock_feed_500_ctx = MagicMock()
+    mock_feed_500_ctx.__aenter__ = AsyncMock(return_value=mock_feed_500)
+    mock_feed_500_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+    session.get.side_effect = [mock_feed_200_ctx, mock_feed_500_ctx]
+
+    client = KnowledgeBaseClient(session, username="myuser", password="mypassword")
+    manager = DisruptionManager(kb_client=client, cache_ttl_seconds=60)
+
+    # 1. First fetch: succeeds
+    incidents1 = await manager.get_kb_incidents()
+    assert len(incidents1) == 1
+    assert incidents1[0]["id"] == "INC999"
+    assert manager.kb_connection_status == KB_STATUS_CONNECTED
+    first_successful_check = manager.kb_last_successful_check
+    assert first_successful_check is not None
+
+    # Fast forward time beyond cache TTL (60s)
+    cached_epoch = manager._kb_incidents_cache[0]
+    with patch("time.time", return_value=cached_epoch + 100):
+        # 2. Second fetch: refresh fails with HTTP 500
+        incidents2 = await manager.get_kb_incidents()
+        assert incidents2 == []
+        # MUST NOT leave stale connected status!
+        assert manager.kb_connection_status == KB_STATUS_FEED_ERROR
+        assert client.status == KB_STATUS_FEED_ERROR
+        # Cache must be invalidated
+        assert manager._kb_incidents_cache is None
+        # Last successful check timestamp is preserved from previous success
+        assert manager.kb_last_successful_check == first_successful_check
+
+
+@pytest.mark.asyncio
+async def test_kb_safe_status_transition_logging_and_redaction(caplog):
+    """Verify that credentials, tokens, response bodies, and raw exceptions are NEVER logged,
+
+    and verify status transitions are logged safely without spamming on repeated checks.
+    """
+    caplog.set_level(logging.DEBUG)
+
+    sensitive_user = "user_secret_identifier_98765"
+    sensitive_pass = "pass_SuperSecret_Password_XYZ!#$%"
+    sensitive_token = "token_RawSecretBearerToken_456789"
+    sensitive_err_msg = "Internal proxy failed connecting to https://secret-backend.internal/auth"
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": sensitive_token}
+    mock_auth_resp.text.return_value = '{"token": "' + sensitive_token + '"}'
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = b"<Incidents></Incidents>"
+
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+    session.get.return_value = mock_feed_ctx
+
+    client = KnowledgeBaseClient(session, username=sensitive_user, password=sensitive_pass)
+
+    # 1. Initial attempt: pending -> connected
+    await client.fetch_incidents()
+    assert client.status == KB_STATUS_CONNECTED
+
+    log_text_first = caplog.text
+    # Log must record transition
+    assert "pending -> connected" in log_text_first
+    # Credentials and tokens MUST NOT appear
+    assert sensitive_user not in log_text_first
+    assert sensitive_pass not in log_text_first
+    assert sensitive_token not in log_text_first
+
+    # 2. Repeated poll while still connected: status unchanged, NO log spam
+    caplog.clear()
+    await client.fetch_incidents()
+    assert client.status == KB_STATUS_CONNECTED
+    # Because status did not transition, no new status log should be emitted
+    assert "Knowledgebase connection status" not in caplog.text
+
+    # 3. Simulate failure with sensitive exception text
+    caplog.clear()
+    session.get.side_effect = aiohttp.ClientConnectorError(
+        connection_key=MagicMock(),
+        os_error=OSError(sensitive_err_msg),
+    )
+    # Clear cached token to force failure or GET failure
+    await client.fetch_incidents()
+    assert client.status == KB_STATUS_REQUEST_ERROR
+
+    log_text_err = caplog.text
+    # Log records safe transition without raw exception message
+    assert "connected -> request_error" in log_text_err
+    assert "ClientConnectorError" in log_text_err
+    # Raw exception text MUST NOT be logged
+    assert sensitive_err_msg not in log_text_err
+    assert sensitive_user not in log_text_err
+    assert sensitive_pass not in log_text_err
+    assert sensitive_token not in log_text_err
+
+    # 4. Another failed poll while still request_error: NO log spam
+    caplog.clear()
+    await client.fetch_incidents()
+    assert client.status == KB_STATUS_REQUEST_ERROR
+    assert "Knowledgebase connection status" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_station_sensor_kb_connection_status_attributes():
+    """Verify that RealtimeTrainLiveTrainTimeSensor exposes kb_connection_status and kb_last_successful_check."""
+    from custom_components.realtime_trains_api.sensor import RealtimeTrainLiveTrainTimeSensor
+    from custom_components.realtime_trains_api.coordinator import RealtimeTrainsUpdateCoordinator
+    from custom_components.realtime_trains_api.rtt_api import RealtimeTrainsApiClient
+
+    mock_hass = MagicMock()
+    mock_session = MagicMock()
+    api_client = RealtimeTrainsApiClient(mock_session, token="tok", refresh_token="ref")
+    api_client.fetch_location_services = AsyncMock(return_value={"services": []})
+
+    # Setup Knowledgebase client that connects successfully
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "test-token"}
+    mock_auth_resp.text.return_value = ""
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = b"<Incidents></Incidents>"
+
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    kb_session = MagicMock()
+    kb_session.post.return_value = mock_auth_ctx
+    kb_session.get.return_value = mock_feed_ctx
+
+    kb_client = KnowledgeBaseClient(kb_session, username="kb_user", password="kb_pass")
+    disruption_manager = DisruptionManager(kb_client=kb_client)
+
+    coordinator = RealtimeTrainsUpdateCoordinator(
+        hass=mock_hass,
+        logger=MagicMock(),
+        name="test_coord",
+        update_interval=timedelta(seconds=60),
+        api=api_client,
+        queries=[{"origin": "VIC", "destination": "CLJ"}],
+        disruption_manager=disruption_manager,
+    )
+
+    sensor = RealtimeTrainLiveTrainTimeSensor(
+        coordinator=coordinator,
+        sensor_name="VIC to CLJ",
+        query_key="VIC_CLJ_all_0",
+        journey_start="VIC",
+        journey_end="CLJ",
+        timeoffset=timedelta(),
+        platforms_of_interest=[],
+        entry_id="entry_123",
+        query_index=0,
+    )
+
+    # 1. Before coordinator refresh: reflects pending status
+    attrs_before = sensor.extra_state_attributes
+    assert attrs_before[ATTR_KB_CONNECTION_STATUS] == KB_STATUS_PENDING
+    assert attrs_before[ATTR_KB_LAST_SUCCESSFUL_CHECK] is None
+
+    # 2. After coordinator update: reflects connected status and timestamp
+    await coordinator._async_update_data()
+    attrs_after = sensor.extra_state_attributes
+    assert attrs_after[ATTR_KB_CONNECTION_STATUS] == KB_STATUS_CONNECTED
+    assert attrs_after[ATTR_KB_LAST_SUCCESSFUL_CHECK] is not None
+    # Validate ISO 8601 string format
+    assert "T" in attrs_after[ATTR_KB_LAST_SUCCESSFUL_CHECK]
+
+    # 3. When KB credentials missing: reflects not_configured
+    dm_no_cred = DisruptionManager(kb_client=None)
+    coord_no_cred = RealtimeTrainsUpdateCoordinator(
+        hass=mock_hass,
+        logger=MagicMock(),
+        name="test_no_cred",
+        update_interval=timedelta(seconds=60),
+        api=api_client,
+        queries=[{"origin": "VIC", "destination": "CLJ"}],
+        disruption_manager=dm_no_cred,
+    )
+    sensor_no_cred = RealtimeTrainLiveTrainTimeSensor(
+        coordinator=coord_no_cred,
+        sensor_name="VIC to CLJ",
+        query_key="VIC_CLJ_all_0",
+        journey_start="VIC",
+        journey_end="CLJ",
+        timeoffset=timedelta(),
+        platforms_of_interest=[],
+        entry_id="entry_no_cred",
+        query_index=0,
+    )
+    assert sensor_no_cred.extra_state_attributes[ATTR_KB_CONNECTION_STATUS] == KB_STATUS_NOT_CONFIGURED
+    await coord_no_cred._async_update_data()
+    assert sensor_no_cred.extra_state_attributes[ATTR_KB_CONNECTION_STATUS] == KB_STATUS_NOT_CONFIGURED

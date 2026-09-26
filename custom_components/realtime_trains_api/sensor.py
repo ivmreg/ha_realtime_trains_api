@@ -48,6 +48,9 @@ from .const import (
     ATTR_SERVICE_STATUS,
     ATTR_STATION_MESSAGES,
     ATTR_DISRUPTIONS,
+    ATTR_KB_CONNECTION_STATUS,
+    ATTR_KB_LAST_SUCCESSFUL_CHECK,
+    KB_STATUS_NOT_CONFIGURED,
     SERVICE_STATUS_NORMAL,
 )
 from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
@@ -297,8 +300,18 @@ async def async_setup_entry(
 
 
 class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
-    """
-    Sensor that reads the rtt API via coordinator.
+    """Sensor that reads the rtt API via coordinator.
+
+    Attributes include:
+    - kb_connection_status: Knowledgebase connection observability status:
+        - "not_configured": KB credentials are not provided or incomplete.
+        - "pending": KB credentials provided, initial attempt pending.
+        - "connected": Successful KB authentication and incidents response parsed.
+        - "authentication_failed": KB authentication rejected credentials.
+        - "feed_error": KB static feed endpoint returned HTTP error.
+        - "request_error": Network, timeout, or connection failure.
+        - "invalid_response": Unparseable response or missing token.
+    - kb_last_successful_check: ISO 8601 timestamp of last successful KB incidents check.
     """
 
     _attr_icon = "mdi:train"
@@ -311,6 +324,7 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
             ATTR_LAST_SUCCESSFUL_UPDATE,
             ATTR_STATION_MESSAGES,
             ATTR_DISRUPTIONS,
+            ATTR_KB_LAST_SUCCESSFUL_CHECK,
         }
     )
 
@@ -360,9 +374,10 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         """Return the state of the sensor."""
-        if not self.coordinator.data or self._query_key not in self.coordinator.data:
+        coord_data = getattr(self.coordinator, "data", None)
+        if not coord_data or self._query_key not in coord_data:
             return None
-        return self.coordinator.data[self._query_key].get("state")
+        return coord_data[self._query_key].get("state")
 
     @property
     def extra_state_attributes(self):
@@ -371,8 +386,9 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
             ATTR_CONTRACT_VERSION: CONTRACT_VERSION,
         }
         
-        if self.coordinator.data and self._query_key in self.coordinator.data:
-            data = self.coordinator.data[self._query_key]
+        coord_data = getattr(self.coordinator, "data", None)
+        if coord_data and self._query_key in coord_data:
+            data = coord_data[self._query_key]
             attrs[ATTR_JOURNEY_START] = data.get("journey_start")
             if data.get("journey_end"):
                 attrs[ATTR_JOURNEY_END] = data.get("journey_end")
@@ -389,6 +405,23 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
             attrs[ATTR_SERVICE_STATUS] = data.get(ATTR_SERVICE_STATUS, SERVICE_STATUS_NORMAL)
             attrs[ATTR_STATION_MESSAGES] = data.get(ATTR_STATION_MESSAGES, [])
             attrs[ATTR_DISRUPTIONS] = data.get(ATTR_DISRUPTIONS, [])
+            attrs[ATTR_KB_CONNECTION_STATUS] = data.get(
+                ATTR_KB_CONNECTION_STATUS, KB_STATUS_NOT_CONFIGURED
+            )
+            attrs[ATTR_KB_LAST_SUCCESSFUL_CHECK] = data.get(ATTR_KB_LAST_SUCCESSFUL_CHECK)
+        else:
+            disruption_mgr = getattr(self.coordinator, "disruption_manager", None)
+            if disruption_mgr:
+                attrs[ATTR_KB_CONNECTION_STATUS] = getattr(
+                    disruption_mgr, "kb_connection_status", KB_STATUS_NOT_CONFIGURED
+                )
+                last_check = getattr(disruption_mgr, "kb_last_successful_check", None)
+                attrs[ATTR_KB_LAST_SUCCESSFUL_CHECK] = (
+                    last_check.isoformat() if isinstance(last_check, datetime) else None
+                )
+            else:
+                attrs[ATTR_KB_CONNECTION_STATUS] = KB_STATUS_NOT_CONFIGURED
+                attrs[ATTR_KB_LAST_SUCCESSFUL_CHECK] = None
                 
         attrs[ATTR_CURRENT_POLLING_INTERVAL] = self.coordinator.current_polling_interval
         if getattr(self.coordinator, "last_update_time", None):
