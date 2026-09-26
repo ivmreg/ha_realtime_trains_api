@@ -26,6 +26,8 @@ from custom_components.realtime_trains_api.disruption import (
     UK_TZ,
 )
 from custom_components.realtime_trains_api.const import (
+    CONF_START,
+    CONF_END,
     SERVICE_STATUS_NORMAL,
     SERVICE_STATUS_DELAYED,
     SERVICE_STATUS_DISRUPTED,
@@ -1618,3 +1620,289 @@ async def test_station_sensor_kb_connection_status_attributes():
     assert sensor_no_cred.extra_state_attributes[ATTR_KB_CONNECTION_STATUS] == KB_STATUS_NOT_CONFIGURED
     await coord_no_cred._async_update_data()
     assert sensor_no_cred.extra_state_attributes[ATTR_KB_CONNECTION_STATUS] == KB_STATUS_NOT_CONFIGURED
+
+
+@pytest.mark.asyncio
+async def test_blackheath_planned_closure_empty_board_regression():
+    """Focused regression test for Blackheath station closure with empty departures.
+
+    Reproduces the live acceptance scenario on 2026-09-26 21:34 Europe/London where:
+    - Origin is BKH (Blackheath) with no departures (board is empty).
+    - KB feed contains the official Incidents V5 notice without StationEffects:
+      Title: 'No Southeastern services via Lewisham on Saturday 26 and Sunday 27 September'
+      RoutesAffected: 'All routes via Lewisham'
+      Description: 'The following stations will be closed all weekend and will only be served by accessible buses: Lewisham, Blackheath, Kidbrooke, Eltham, Falconwood, Welling, Bexleyheath, Barnehurst.'
+    - Official National Rail URL: https://www.nationalrail.co.uk/engineering-works/lewisham-26-sep-20260926/
+    - Asserts service_status is station_closed and disruption details are surfaced.
+    - Asserts that an unrelated station (MAN) does NOT flag the incident.
+    """
+    now = datetime(2026, 9, 26, 21, 34, tzinfo=UK_TZ)
+
+    kb_xml_payload = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="NRE_LEW_20260926">
+    <IncidentNumber>20260926</IncidentNumber>
+    <Header>No Southeastern services via Lewisham on Saturday 26 and Sunday 27 September</Header>
+    <IncidentDescription>The following stations will be closed all weekend and will only be served by accessible buses: Lewisham, Blackheath, Kidbrooke, Eltham, Falconwood, Welling, Bexleyheath, Barnehurst.</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-27T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+    <Affects>
+      <RoutesAffected>All routes via Lewisham</RoutesAffected>
+    </Affects>
+    <AlternativeTransport>
+      <AlternativeTravelText>Replacement buses operate between Lewisham and Charlton via Blackheath.</AlternativeTravelText>
+    </AlternativeTransport>
+    <CustomURL>https://www.nationalrail.co.uk/engineering-works/lewisham-26-sep-20260926/</CustomURL>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "valid_token"}
+    mock_auth_resp.text.return_value = '{"token": "valid_token"}'
+
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = kb_xml_payload
+
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+    session.get.return_value = mock_feed_ctx
+
+    kb_client = KnowledgeBaseClient(session, username="user", password="pwd")
+    manager = DisruptionManager(kb_client=kb_client)
+
+    # 1. Query for Blackheath (BKH) station-wide with NO departures
+    status, station_messages, disruptions = await manager.get_disruptions_for_query(
+        origin="BKH",
+        destination=None,
+        next_trains=[],
+        now=now,
+    )
+
+    # Service status must correctly identify station_closed
+    assert status == SERVICE_STATUS_STATION_CLOSED
+    assert len(disruptions) == 1
+    d = disruptions[0]
+    assert d["id"] == "NRE_LEW_20260926"
+    assert "No Southeastern services via Lewisham" in d["title"]
+    assert d["is_planned"] is True
+    assert "Blackheath" in d["summary"]
+    assert "Replacement buses" in d["alternative_travel"]
+    assert d["url"] == "https://www.nationalrail.co.uk/engineering-works/lewisham-26-sep-20260926/"
+
+    # 2. Avoid broad matching: an unrelated station (MAN) must NOT match this disruption
+    status_unrelated, _, disruptions_unrelated = await manager.get_disruptions_for_query(
+        origin="MAN",
+        destination=None,
+        next_trains=[],
+        now=now,
+    )
+    assert status_unrelated == SERVICE_STATUS_NO_DEPARTURES
+    assert disruptions_unrelated == []
+
+
+@pytest.mark.asyncio
+async def test_blackheath_engineering_work_unproven_closure():
+    """Verify that when engineering work is active but closure cannot be proven, status is engineering_work."""
+    now = datetime(2026, 9, 26, 21, 34, tzinfo=UK_TZ)
+
+    kb_xml_unproven = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="NRE_LEW_ENG">
+    <IncidentNumber>20260927</IncidentNumber>
+    <Header>Engineering work in the Lewisham area</Header>
+    <IncidentDescription>Planned track maintenance taking place between Lewisham and Dartford via Blackheath. Replacement buses are running.</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-27T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+    <Affects>
+      <RoutesAffected>Southeastern services via Blackheath</RoutesAffected>
+    </Affects>
+    <AlternativeTransport>
+      <AlternativeTravelText>Replacement buses are running.</AlternativeTravelText>
+    </AlternativeTransport>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "valid_token"}
+    mock_auth_resp.text.return_value = '{"token": "valid_token"}'
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = kb_xml_unproven
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+    session.get.return_value = mock_feed_ctx
+
+    kb_client = KnowledgeBaseClient(session, username="user", password="pwd")
+    manager = DisruptionManager(kb_client=kb_client)
+
+    status, _, disruptions = await manager.get_disruptions_for_query(
+        origin="BKH",
+        destination=None,
+        next_trains=[],
+        now=now,
+    )
+
+    # Empty board with planned disruption where closure is not proven -> engineering_work
+    assert status == SERVICE_STATUS_ENGINEERING_WORK
+    assert len(disruptions) == 1
+    assert disruptions[0]["id"] == "NRE_LEW_ENG"
+    assert disruptions[0]["is_planned"] is True
+
+
+def test_date_only_validity_period_active_at_night():
+    """Verify that date-only validity periods (YYYY-MM-DD) remain active throughout the final day."""
+    now = datetime(2026, 9, 26, 21, 34, tzinfo=UK_TZ)
+
+    xml_date_only = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="NRE_DATE_ONLY">
+    <Summary>Weekend Track Maintenance</Summary>
+    <PlannedIncident>true</PlannedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartDate>2026-09-26</StartDate>
+        <EndDate>2026-09-26</EndDate>
+      </ValidityPeriod>
+    </ValidityPeriods>
+  </PtIncident>
+</Incidents>"""
+
+    client = KnowledgeBaseClient(MagicMock())
+    incidents = client._parse_incidents(xml_date_only)
+    assert len(incidents) == 1
+    inc = incidents[0]
+    # On 2026-09-26 at 21:34, an incident valid for 2026-09-26 must still be active
+    assert is_incident_active(inc, now) is True
+
+
+@pytest.mark.asyncio
+async def test_coordinator_blackheath_station_closed_contract_integration():
+    """Verify full coordinator flow for BKH station closed with empty departures."""
+    from custom_components.realtime_trains_api.sensor import RealtimeTrainLiveTrainTimeSensor
+    from custom_components.realtime_trains_api.coordinator import RealtimeTrainsUpdateCoordinator
+    from custom_components.realtime_trains_api.rtt_api import RealtimeTrainsApiClient
+
+    now = datetime(2026, 9, 26, 21, 34, tzinfo=UK_TZ)
+
+    mock_hass = MagicMock()
+    mock_rtt_session = MagicMock()
+    api_client = RealtimeTrainsApiClient(mock_rtt_session, token="rtt_tok")
+    # RTT returns location data for Blackheath but 0 services
+    api_client.fetch_location_services = AsyncMock(return_value={
+        "location": {"name": "Blackheath", "crs": "BKH"},
+        "services": [],
+    })
+
+    kb_xml_payload = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="NRE_LEW_BKH">
+    <IncidentNumber>999</IncidentNumber>
+    <Header>No Southeastern services via Lewisham on Saturday 26 and Sunday 27 September</Header>
+    <IncidentDescription>The following stations will be closed all weekend and will only be served by accessible buses: Lewisham, Blackheath, Kidbrooke, Eltham, Falconwood, Welling, Bexleyheath, Barnehurst.</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-27T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+    <Affects>
+      <RoutesAffected>All routes via Lewisham</RoutesAffected>
+    </Affects>
+    <AlternativeTransport>
+      <AlternativeTravelText>Replacement buses will run between Lewisham and Charlton via Blackheath.</AlternativeTravelText>
+    </AlternativeTransport>
+    <CustomURL>https://www.nationalrail.co.uk/engineering-works/lewisham-26-sep-20260926/</CustomURL>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "valid_token"}
+    mock_auth_resp.text.return_value = '{"token": "valid_token"}'
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = kb_xml_payload
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    kb_session = MagicMock()
+    kb_session.post.return_value = mock_auth_ctx
+    kb_session.get.return_value = mock_feed_ctx
+
+    kb_client = KnowledgeBaseClient(kb_session, username="u", password="p")
+    manager = DisruptionManager(kb_client=kb_client)
+
+    coordinator = RealtimeTrainsUpdateCoordinator(
+        hass=mock_hass,
+        logger=MagicMock(),
+        name="test_bkh_coord",
+        update_interval=timedelta(seconds=60),
+        api=api_client,
+        queries=[{CONF_START: "BKH", CONF_END: None}],
+        disruption_manager=manager,
+    )
+
+    sensor = RealtimeTrainLiveTrainTimeSensor(
+        coordinator=coordinator,
+        sensor_name="Blackheath Station",
+        query_key="BKH_all_all_0",
+        journey_start="BKH",
+        journey_end=None,
+        timeoffset=timedelta(),
+        platforms_of_interest=[],
+        entry_id="bkh_entry",
+        query_index=0,
+    )
+
+    with patch("custom_components.realtime_trains_api.coordinator.dt_util.now", return_value=now):
+        coordinator.data = await coordinator._async_update_data()
+
+    # Sensor state must be None (no departures), service_status must be station_closed
+    assert sensor.native_value is None
+    attrs = sensor.extra_state_attributes
+    assert attrs["service_status"] == SERVICE_STATUS_STATION_CLOSED
+    assert attrs["next_trains"] == []
+    assert len(attrs["disruptions"]) == 1
+    disruption = attrs["disruptions"][0]
+    assert disruption["id"] == "NRE_LEW_BKH"
+    assert disruption["is_planned"] is True
+    assert disruption["url"] == "https://www.nationalrail.co.uk/engineering-works/lewisham-26-sep-20260926/"
+    assert "Replacement buses" in disruption["alternative_travel"]

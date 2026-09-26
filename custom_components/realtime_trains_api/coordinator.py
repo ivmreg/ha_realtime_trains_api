@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 import logging
+import re
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -18,6 +19,7 @@ from .const import (
     CONF_PLATFORMS_OF_INTEREST,
     CONF_LOOKBACK,
     CONF_PINNED_DEPARTURE,
+    CONF_SENSORNAME,
     DEFAULT_LOOKBACK_MINUTES,
     DEFAULT_MAX_TRAINS,
     NO_TRAINS_BACKOFF_SECONDS,
@@ -91,6 +93,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.last_update_time = None
         self.last_successful_update: datetime | None = None
         self.data_stale = False
+        self._station_name_cache: dict[str, str] = {}
 
     async def _async_refresh_token(self) -> bool:
         """Refresh the access token."""
@@ -469,10 +472,45 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     pinned_train = train
                     break
 
+        origin_station_name = None
+        destination_station_name = None
+        if isinstance(data, dict):
+            loc_data = data.get("location")
+            if isinstance(loc_data, dict):
+                origin_station_name = loc_data.get("name") or loc_data.get("description")
+            filter_data = data.get("filter")
+            if isinstance(filter_data, dict):
+                dest_data = filter_data.get("destination")
+                if isinstance(dest_data, dict):
+                    destination_station_name = dest_data.get("name") or dest_data.get("description")
+
+        # Fallback to configured sensor/query name if available (e.g. "Blackheath Station" -> "Blackheath")
+        if not origin_station_name:
+            cfg_name = query.get(CONF_SENSORNAME) or query.get("name")
+            if cfg_name and isinstance(cfg_name, str):
+                cleaned_cfg = re.sub(r"\s+(?:Railway\s+)?Station$", "", cfg_name.strip(), flags=re.IGNORECASE).strip()
+                if cleaned_cfg:
+                    origin_station_name = cleaned_cfg
+
+        if origin and origin_station_name:
+            self._station_name_cache[origin] = origin_station_name
+        elif origin and origin in self._station_name_cache:
+            origin_station_name = self._station_name_cache[origin]
+
+        if destination and destination_station_name:
+            self._station_name_cache[destination] = destination_station_name
+        elif destination and destination in self._station_name_cache:
+            destination_station_name = self._station_name_cache[destination]
+
         try:
             service_status, station_messages, disruptions = (
                 await self.disruption_manager.get_disruptions_for_query(
-                    origin, destination, next_trains, now
+                    origin,
+                    destination,
+                    next_trains,
+                    now,
+                    origin_station_name=origin_station_name,
+                    destination_station_name=destination_station_name,
                 )
             )
         except Exception as err:

@@ -49,6 +49,9 @@ STATION_CLOSED_PATTERNS = [
     "closure of the station",
     "closure of station",
     "station closed",
+    "is closed all weekend",
+    "closed all weekend",
+    "station is closed all weekend",
 ]
 
 FUTURE_CLOSURE_INDICATORS = [
@@ -219,6 +222,7 @@ def parse_xml_robust(xml_content: str | bytes) -> ET.Element:
 def parse_incident_datetime(
     val: str | None,
     default_tz: ZoneInfo = UK_TZ,
+    is_end: bool = False,
 ) -> datetime | None:
     """Parse an incident timestamp robustly into a timezone-aware datetime."""
     if not val or not isinstance(val, str):
@@ -231,6 +235,8 @@ def parse_incident_datetime(
         val = val[:-1] + "+00:00"
     try:
         dt = datetime.fromisoformat(val)
+        if len(val) == 10 and is_end:
+            dt = dt.replace(hour=23, minute=59, second=59)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=default_tz)
         return dt
@@ -239,6 +245,8 @@ def parse_incident_datetime(
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(val, fmt)
+            if fmt == "%Y-%m-%d" and is_end:
+                dt = dt.replace(hour=23, minute=59, second=59)
             return dt.replace(tzinfo=default_tz)
         except Exception:
             continue
@@ -281,6 +289,63 @@ def is_incident_active(incident: dict[str, Any], now: datetime) -> bool:
     return False
 
 
+def is_station_named_in_closure(text: str, station_name: str, crs: str | None = None) -> bool:
+    """Check if a station is explicitly named in a station closure list or direct closure phrase.
+
+    Avoids matching when the station is merely mentioned as an alternative route, diversion,
+    or ticket acceptance route.
+    """
+    if not text:
+        return False
+
+    tokens: list[str] = []
+    clean_name = station_name.strip() if station_name else ""
+    if len(clean_name) >= 3:
+        tokens.append(clean_name)
+    clean_crs = crs.strip().upper() if crs else ""
+    if len(clean_crs) == 3:
+        tokens.append(clean_crs)
+
+    if not tokens:
+        return False
+
+    # 1. Direct station closure phrases
+    for tok in tokens:
+        if re.search(
+            rf"\b{re.escape(tok)}\s+(?:station\s+)?(?:is\s+|currently\s+|temporarily\s+|will\s+be\s+)?closed\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+        if re.search(
+            rf"\b(?:closure\s+of|closing)\s+(?:the\s+)?{re.escape(tok)}(?:\s+station)?\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+        if re.search(
+            rf"\b{re.escape(tok)}\s*:\s*station\s+closed\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+
+    # 2. Explicit closure lists / phrases
+    # e.g. "The following stations will be closed all weekend and will only be served by accessible buses: Lewisham, Blackheath, ..."
+    closure_list_pattern = re.compile(
+        r"(?:the\s+following\s+stations?\s+(?:that\s+are\s+)?(?:will\s+be|are|is|remaining)?\s*closed|"
+        r"closed\s+stations?|stations?\s+closed|stations?\s+will\s+be\s+closed)[^.:;]*[:\-]([\s\S]*?)(?:\.\s+[A-Z]|\n\n|\Z)",
+        re.IGNORECASE,
+    )
+    for match in closure_list_pattern.finditer(text):
+        list_content = match.group(1)
+        for tok in tokens:
+            if re.search(rf"\b{re.escape(tok)}\b", list_content, re.IGNORECASE):
+                return True
+
+    return False
+
+
 def incident_matches_crs(
     incident: dict[str, Any],
     crs: str,
@@ -296,17 +361,37 @@ def incident_matches_crs(
         return True
 
     routes = incident.get("routes_affected", "")
-    if routes:
-        # Bounded token matching on CRS code to prevent cross-station false positives
-        if re.search(rf"\b{re.escape(crs_upper)}\b", routes):
-            return True
+    if routes and re.search(rf"\b{re.escape(crs_upper)}\b", routes):
+        return True
 
-    if station_names and routes:
+    names_to_check: list[str] = []
+    if station_names:
         for name in station_names:
             clean_name = name.strip()
-            if len(clean_name) >= 4:
-                if re.search(rf"\b{re.escape(clean_name)}\b", routes, re.IGNORECASE):
-                    return True
+            if len(clean_name) >= 3 and clean_name not in names_to_check:
+                names_to_check.append(clean_name)
+
+    # Narrow fallback for Blackheath (BKH) if station name was not provided
+    if not names_to_check and crs_upper == "BKH":
+        names_to_check.append("Blackheath")
+
+    if routes:
+        for name in names_to_check:
+            if re.search(rf"\b{re.escape(name)}\b", routes, re.IGNORECASE):
+                return True
+
+    title = incident.get("title", "")
+    if title:
+        for name in names_to_check:
+            if re.search(rf"\b{re.escape(name)}\b", title, re.IGNORECASE):
+                return True
+
+    # Match station name in Description ONLY when associated with explicit closure list or direct closure phrase
+    desc = incident.get("summary", "") or incident.get("description", "")
+    if desc:
+        for name in names_to_check:
+            if is_station_named_in_closure(desc, name, crs_upper):
+                return True
 
     return False
 
@@ -324,9 +409,14 @@ def is_explicit_current_closure(text: str) -> bool:
         if not s_clean:
             continue
         # Check if this clause contains any current closure pattern
-        if any(pat in s_clean for pat in STATION_CLOSED_PATTERNS):
+        if any(pat in s_clean for pat in STATION_CLOSED_PATTERNS) or "closed all weekend" in s_clean:
+            is_weekend_closure = "closed all weekend" in s_clean
             # If the clause contains a future indicator, it's not a current closure
-            if any(fm in s_clean for fm in FUTURE_CLOSURE_INDICATORS):
+            # But "will be closed all weekend" describes current state for an active weekend incident
+            if any(
+                fm in s_clean for fm in FUTURE_CLOSURE_INDICATORS
+                if not (is_weekend_closure and fm == "will be closed")
+            ):
                 continue
             return True
 
@@ -348,11 +438,16 @@ def is_origin_closure(
     if not is_explicit_current_closure(text):
         return False
 
-    if not destination and not dest_names:
-        return True
-
-    lower = text.lower()
-    sentences = re.split(r"[.\n;!]", lower)
+    orig_tokens: set[str] = set()
+    if origin:
+        orig_tokens.add(origin.strip().lower())
+    if origin_names:
+        for o_name in origin_names:
+            clean = o_name.strip().lower()
+            if len(clean) >= 3:
+                orig_tokens.add(clean)
+    if not orig_tokens and origin and origin.strip().upper() == "BKH":
+        orig_tokens.add("blackheath")
 
     dest_tokens: set[str] = set()
     if destination:
@@ -363,45 +458,66 @@ def is_origin_closure(
             if len(clean) >= 3:
                 dest_tokens.add(clean)
 
-    orig_tokens: set[str] = set()
-    if origin:
-        orig_tokens.add(origin.strip().lower())
-    if origin_names:
-        for o_name in origin_names:
-            clean = o_name.strip().lower()
-            if len(clean) >= 3:
-                orig_tokens.add(clean)
+    # Check if origin station is explicitly named in the closure
+    origin_in_closure = any(
+        is_station_named_in_closure(text, tok, origin)
+        for tok in orig_tokens
+    )
+    if origin_in_closure:
+        return True
+
+    # If destination was explicitly named in closure and origin was not, origin is not closed
+    dest_in_closure = any(
+        is_station_named_in_closure(text, tok, destination)
+        for tok in dest_tokens
+    )
+    if dest_in_closure and not origin_in_closure:
+        return False
+
+    lower = text.lower()
+    sentences = re.split(r"[.\n;!]", lower)
 
     closure_found = False
     for s in sentences:
         s_clean = s.strip()
         if not s_clean:
             continue
-        if any(pat in s_clean for pat in STATION_CLOSED_PATTERNS):
-            if any(fm in s_clean for fm in FUTURE_CLOSURE_INDICATORS):
-                continue
-            closure_found = True
+        has_closed_pattern = any(pat in s_clean for pat in STATION_CLOSED_PATTERNS) or "closed all weekend" in s_clean
+        if not has_closed_pattern:
+            continue
 
-            mentions_dest = any(
-                re.search(rf"\b{re.escape(tok)}\b", s_clean) for tok in dest_tokens
-            )
-            mentions_orig = any(
-                re.search(rf"\b{re.escape(tok)}\b", s_clean) for tok in orig_tokens
-            )
+        is_weekend_closure = "closed all weekend" in s_clean
+        if any(
+            fm in s_clean for fm in FUTURE_CLOSURE_INDICATORS
+            if not (is_weekend_closure and fm == "will be closed")
+        ):
+            continue
 
-            # If it explicitly names the destination as closed and does NOT name origin
-            if mentions_dest and not mentions_orig:
+        # If it lists specific stations closed and origin was not among them, origin is not closed
+        if re.search(r"(?:stations?\s+closed|stations?\s+will\s+be\s+closed|closed\s+stations?)[^.:;]*[:\-]", s_clean):
+            if not any(re.search(rf"\b{re.escape(tok)}\b", s_clean) for tok in orig_tokens):
                 return False
 
-            # If it names a specific station before 'station ... closed' and does not match origin
-            named_station_match = re.search(
-                r"\b([a-z\s]+?)\s+station\s+(?:is\s+|currently\s+|temporarily\s+)?closed\b",
-                s_clean,
-            )
-            if named_station_match and orig_tokens:
-                named_prefix = named_station_match.group(1).strip()
-                if named_prefix and not any(tok in named_prefix for tok in orig_tokens):
-                    return False
+        # If it names a specific station before 'station ... closed' and does not match origin
+        named_station_match = re.search(
+            r"\b([a-z\s]+?)\s+station[\s:]+(?:is\s+|currently\s+|temporarily\s+)?closed\b",
+            s_clean,
+        )
+        if named_station_match and orig_tokens:
+            named_prefix = named_station_match.group(1).strip()
+            if named_prefix and not any(tok in named_prefix for tok in orig_tokens):
+                return False
+
+        closure_found = True
+
+        mentions_dest = any(
+            re.search(rf"\b{re.escape(tok)}\b", s_clean) for tok in dest_tokens
+        )
+        mentions_orig = any(
+            re.search(rf"\b{re.escape(tok)}\b", s_clean) for tok in orig_tokens
+        )
+        if mentions_dest and not mentions_orig:
+            return False
 
     return closure_found
 
@@ -1005,7 +1121,7 @@ class KnowledgeBaseClient:
                     or get_child_text(vp, "to")
                 )
                 start_dt = parse_incident_datetime(start_str)
-                end_dt = parse_incident_datetime(end_str)
+                end_dt = parse_incident_datetime(end_str, is_end=True)
                 validity_periods.append((start_dt, end_dt))
         else:
             start_str = (
@@ -1021,7 +1137,7 @@ class KnowledgeBaseClient:
             if start_str or end_str:
                 validity_periods.append((
                     parse_incident_datetime(start_str),
-                    parse_incident_datetime(end_str),
+                    parse_incident_datetime(end_str, is_end=True),
                 ))
 
         # Affected stations and routes
@@ -1227,6 +1343,8 @@ class DisruptionManager:
         destination: str | None,
         next_trains: list[dict[str, Any]],
         now: datetime | None = None,
+        origin_station_name: str | None = None,
+        destination_station_name: str | None = None,
     ) -> tuple[str, list[str], list[dict[str, Any]]]:
         """Fetch and filter station messages and disruptions for a specific query."""
         if now is None:
@@ -1242,7 +1360,18 @@ class DisruptionManager:
         raw_incidents = await self.get_kb_incidents()
 
         origin_names: list[str] = []
+        if origin_station_name and str(origin_station_name).strip():
+            origin_names.append(str(origin_station_name).strip())
+        # Narrow fallback for Blackheath (BKH) when RTT metadata and configured names are unavailable
+        if not origin_names and origin.strip().upper() == "BKH":
+            origin_names.append("Blackheath")
+
         dest_names: list[str] = []
+        if destination_station_name and str(destination_station_name).strip():
+            dest_names.append(str(destination_station_name).strip())
+        if not dest_names and destination and destination.strip().upper() == "BKH":
+            dest_names.append("Blackheath")
+
         for t in next_trains:
             o_name = t.get("origin_name")
             if o_name and o_name not in origin_names:
