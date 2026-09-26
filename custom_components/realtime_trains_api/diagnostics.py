@@ -8,9 +8,22 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, CONF_API_TOKEN, CONF_REFRESH_TOKEN
+from .const import (
+    DOMAIN,
+    CONF_API_TOKEN,
+    CONF_REFRESH_TOKEN,
+    CONF_OPENLDBWS_TOKEN,
+    CONF_KB_USERNAME,
+    CONF_KB_PASSWORD,
+)
 
-TO_REDACT = {CONF_API_TOKEN, CONF_REFRESH_TOKEN}
+TO_REDACT = {
+    CONF_API_TOKEN,
+    CONF_REFRESH_TOKEN,
+    CONF_OPENLDBWS_TOKEN,
+    CONF_KB_USERNAME,
+    CONF_KB_PASSWORD,
+}
 
 
 async def async_get_config_entry_diagnostics(

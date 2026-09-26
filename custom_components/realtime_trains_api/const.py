@@ -42,3 +42,33 @@ NO_TRAINS_BACKOFF_SECONDS = 1800
 # Canonical contract version
 CONTRACT_VERSION = 2
 ATTR_CONTRACT_VERSION = "contract_version"
+
+# Disruption credentials
+CONF_OPENLDBWS_TOKEN = "openldbws_token"
+CONF_KB_USERNAME = "kb_username"
+CONF_KB_PASSWORD = "kb_password"
+
+# Service status enum
+SERVICE_STATUS_NORMAL = "normal"
+SERVICE_STATUS_DELAYED = "delayed"
+SERVICE_STATUS_DISRUPTED = "disrupted"
+SERVICE_STATUS_ENGINEERING_WORK = "engineering_work"
+SERVICE_STATUS_STATION_CLOSED = "station_closed"
+SERVICE_STATUS_NO_DEPARTURES = "no_departures"
+
+SERVICE_STATUS_ALL = {
+    SERVICE_STATUS_NORMAL,
+    SERVICE_STATUS_DELAYED,
+    SERVICE_STATUS_DISRUPTED,
+    SERVICE_STATUS_ENGINEERING_WORK,
+    SERVICE_STATUS_STATION_CLOSED,
+    SERVICE_STATUS_NO_DEPARTURES,
+}
+
+# Sensor attributes
+ATTR_SERVICE_STATUS = "service_status"
+ATTR_STATION_MESSAGES = "station_messages"
+ATTR_DISRUPTIONS = "disruptions"
+
+# Disruption cache TTL (15 minutes)
+DEFAULT_DISRUPTION_CACHE_SECONDS = 900

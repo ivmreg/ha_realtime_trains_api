@@ -5,6 +5,9 @@
                 "data": {
                     "token": "Access Token",
                     "refresh_token": "Refresh Token",
+                    "openldbws_token": "Darwin OpenLDBWS API Token (Optional)",
+                    "kb_username": "National Rail Knowledgebase Username (Optional)",
+                    "kb_password": "National Rail Knowledgebase Password (Optional)",
                     "auto_adjust_scans": "Back off polling while a station has no departures",
                     "peak_interval": "Peak polling interval (seconds)",
                     "off_peak_interval": "Off-peak polling interval (seconds)",
@@ -61,6 +64,9 @@
             "settings": {
                 "title": "Polling settings",
                 "data": {
+                    "openldbws_token": "Darwin OpenLDBWS API Token (Optional)",
+                    "kb_username": "National Rail Knowledgebase Username (Optional)",
+                    "kb_password": "National Rail Knowledgebase Password (Optional)",
                     "auto_adjust_scans": "Back off polling while a station has no departures",
                     "peak_interval": "Peak polling interval (seconds)",
                     "off_peak_interval": "Off-peak polling interval (seconds)",

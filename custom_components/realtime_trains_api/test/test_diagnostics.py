@@ -4,6 +4,7 @@ import pytest
 
 from custom_components.realtime_trains_api.diagnostics import (
     async_get_config_entry_diagnostics,
+    TO_REDACT,
 )
 
 
@@ -52,3 +53,53 @@ async def test_diagnostics_without_coordinator(hass, config_entry):
 
     assert diagnostics["coordinator"] is None
     assert diagnostics["entry"]["data"]["token"] == "**REDACTED**"
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_redacts_credentials_in_data_and_options(hass, config_entry):
+    config_entry.data = {
+        "token": "secret-rtt-token",
+        "refresh_token": "secret-rtt-refresh",
+        "openldbws_token": "secret-openldbws-token",
+        "kb_username": "secret-kb-user",
+        "kb_password": "secret-kb-password",
+        "unrelated_field": "visible_value",
+    }
+    config_entry.options = {
+        "token": "secret-opt-rtt-token",
+        "refresh_token": "secret-opt-rtt-refresh",
+        "openldbws_token": "secret-opt-openldbws-token",
+        "kb_username": "secret-opt-kb-user",
+        "kb_password": "secret-opt-kb-password",
+        "unrelated_option": "visible_option",
+    }
+    hass.data = {}
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, config_entry)
+
+    data = diagnostics["entry"]["data"]
+    options = diagnostics["entry"]["options"]
+
+    # Verify all credential keys are redacted in entry.data
+    assert data["token"] == "**REDACTED**"
+    assert data["refresh_token"] == "**REDACTED**"
+    assert data["openldbws_token"] == "**REDACTED**"
+    assert data["kb_username"] == "**REDACTED**"
+    assert data["kb_password"] == "**REDACTED**"
+    assert data["unrelated_field"] == "visible_value"
+
+    # Verify all credential keys are redacted in entry.options
+    assert options["token"] == "**REDACTED**"
+    assert options["refresh_token"] == "**REDACTED**"
+    assert options["openldbws_token"] == "**REDACTED**"
+    assert options["kb_username"] == "**REDACTED**"
+    assert options["kb_password"] == "**REDACTED**"
+    assert options["unrelated_option"] == "visible_option"
+
+
+def test_to_redact_contains_all_credential_keys():
+    assert "openldbws_token" in TO_REDACT
+    assert "kb_username" in TO_REDACT
+    assert "kb_password" in TO_REDACT
+    assert "token" in TO_REDACT
+    assert "refresh_token" in TO_REDACT

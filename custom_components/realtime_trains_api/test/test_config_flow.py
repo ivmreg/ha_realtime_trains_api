@@ -432,3 +432,35 @@ async def test_credential_hygiene(caplog):
     assert "super_secret" not in caplog.text
     assert secret_refresh[:10] not in caplog.text
     assert secret_access[:10] not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_flow_stores_disruption_credentials():
+    from custom_components.realtime_trains_api.const import (
+        CONF_OPENLDBWS_TOKEN,
+        CONF_KB_USERNAME,
+        CONF_KB_PASSWORD,
+    )
+
+    flow = _make_flow()
+    flow.async_set_unique_id = AsyncMock()
+    flow._abort_if_unique_id_configured = MagicMock()
+
+    with _patch_api_client():
+        user_result = await flow.async_step_user(
+            {
+                **USER_INPUT,
+                CONF_OPENLDBWS_TOKEN: "test-darwin-token",
+                CONF_KB_USERNAME: "test-kb-user",
+                CONF_KB_PASSWORD: "test-kb-pass",
+            }
+        )
+        assert user_result["type"] == "form"
+        assert user_result["step_id"] == "query"
+
+        result = await flow.async_step_query(dict(QUERY_INPUT))
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_OPENLDBWS_TOKEN] == "test-darwin-token"
+    assert result["data"][CONF_KB_USERNAME] == "test-kb-user"
+    assert result["data"][CONF_KB_PASSWORD] == "test-kb-pass"

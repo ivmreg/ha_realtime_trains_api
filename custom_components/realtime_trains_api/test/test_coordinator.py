@@ -557,3 +557,42 @@ def test_build_train_field_type_normalization():
     assert train_valid["stock"] == "City Beam"
     assert train_valid["length"] == 8
     assert train_valid["lateness"] == 3
+
+
+@pytest.mark.asyncio
+async def test_coordinator_merges_disruptions_and_empty_board_numeric_none():
+    mock_hass = MagicMock()
+    mock_api = MagicMock()
+    mock_api.fetch_location_services = AsyncMock(return_value={"services": []})
+
+    mock_disruption = MagicMock()
+    mock_disruption.get_disruptions_for_query = AsyncMock(
+        return_value=(
+            "no_departures",
+            ["Station announcement 1"],
+            [{"id": "D1", "title": "Planned Work", "is_planned": True, "summary": "Buses run", "alternative_travel": None, "url": None}],
+        )
+    )
+
+    coordinator = RealtimeTrainsUpdateCoordinator(
+        hass=mock_hass,
+        logger=MagicMock(),
+        name="test_coordinator",
+        update_interval=timedelta(seconds=60),
+        api=mock_api,
+        queries=[{"origin": "VIC", "destination": None}],
+        disruption_manager=mock_disruption,
+    )
+
+    data = await coordinator._async_update_data()
+    key = list(data.keys())[0]
+    result = data[key]
+
+    # Numeric None on empty board
+    assert result["state"] is None
+    assert result["next_trains"] == []
+    # Merged disruption data
+    assert result["service_status"] == "no_departures"
+    assert result["station_messages"] == ["Station announcement 1"]
+    assert len(result["disruptions"]) == 1
+    assert result["disruptions"][0]["id"] == "D1"

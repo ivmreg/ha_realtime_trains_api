@@ -40,6 +40,7 @@ from .rtt_api import (
     RealtimeTrainsApiRateLimitError,
     RealtimeTrainsApiNotFoundError,
 )
+from .disruption import DisruptionManager, compute_service_status
 
 _LOGGER = logging.getLogger(__name__)
 TIMEZONE = ZoneInfo('Europe/London')
@@ -69,6 +70,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         off_peak_interval: int = 300,
         peak_windows: list = None,
         auto_adjust_scans: bool = False,
+        disruption_manager: DisruptionManager | None = None,
     ) -> None:
         """Initialize."""
         super().__init__(
@@ -83,6 +85,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.off_peak_interval = off_peak_interval
         self.peak_windows = peak_windows or []
         self.auto_adjust_scans = auto_adjust_scans
+        self.disruption_manager = disruption_manager or DisruptionManager()
         self.current_polling_interval = None
         self.last_update_time = None
         self.last_successful_update: datetime | None = None
@@ -465,6 +468,18 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     pinned_train = train
                     break
 
+        try:
+            service_status, station_messages, disruptions = (
+                await self.disruption_manager.get_disruptions_for_query(
+                    origin, destination, next_trains, now
+                )
+            )
+        except Exception as err:
+            _LOGGER.debug("Disruption fetch failed for %s: %s", origin, err)
+            service_status = compute_service_status(next_trains, [], [])
+            station_messages = []
+            disruptions = []
+
         return query_key, {
             "state": state,
             "error": error,
@@ -473,6 +488,9 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "journey_start": origin,
             "journey_end": destination,
             "platforms_of_interest": platforms_of_interest,
+            "service_status": service_status,
+            "station_messages": station_messages,
+            "disruptions": disruptions,
         }
 
     async def _enrich_journey_data(

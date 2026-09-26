@@ -36,6 +36,9 @@ from .const import (
     CONF_PINNED_DEPARTURE,
     DEFAULT_LOOKBACK_MINUTES,
     HHMM_PATTERN,
+    CONF_OPENLDBWS_TOKEN,
+    CONF_KB_USERNAME,
+    CONF_KB_PASSWORD,
 )
 from .normalization import (
     DEFAULT_TITLE,
@@ -56,14 +59,18 @@ FIELD_TIME_OFFSET = "time_offset_minutes"
 MAX_TIME_OFFSET_MINUTES = 12 * 60
 
 
-def _user_schema() -> vol.Schema:
+def _user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    defaults = defaults or {}
     return vol.Schema(
         {
-            vol.Required(RTT_CONF_REFRESH_TOKEN): cv.string,
-            vol.Optional(CONF_AUTOADJUSTSCANS, default=False): bool,
-            vol.Optional(CONF_PEAK_INTERVAL, default=DEFAULT_PEAK_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
-            vol.Optional(CONF_OFF_PEAK_INTERVAL, default=DEFAULT_OFF_PEAK_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
-            vol.Optional(CONF_PEAK_WINDOWS, default=DEFAULT_PEAK_WINDOWS): cv.string,
+            vol.Required(RTT_CONF_REFRESH_TOKEN, default=defaults.get(RTT_CONF_REFRESH_TOKEN, "")): cv.string,
+            vol.Optional(CONF_OPENLDBWS_TOKEN, default=defaults.get(CONF_OPENLDBWS_TOKEN, "")): cv.string,
+            vol.Optional(CONF_KB_USERNAME, default=defaults.get(CONF_KB_USERNAME, "")): cv.string,
+            vol.Optional(CONF_KB_PASSWORD, default=defaults.get(CONF_KB_PASSWORD, "")): cv.string,
+            vol.Optional(CONF_AUTOADJUSTSCANS, default=defaults.get(CONF_AUTOADJUSTSCANS, False)): bool,
+            vol.Optional(CONF_PEAK_INTERVAL, default=defaults.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL)): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+            vol.Optional(CONF_OFF_PEAK_INTERVAL, default=defaults.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL)): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
+            vol.Optional(CONF_PEAK_WINDOWS, default=defaults.get(CONF_PEAK_WINDOWS, DEFAULT_PEAK_WINDOWS)): cv.string,
         }
     )
 
@@ -260,6 +267,9 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
                     
                     user_input[RTT_CONF_API_TOKEN] = access_token
                     user_input[RTT_CONF_REFRESH_TOKEN] = refresh_token
+                    user_input[CONF_OPENLDBWS_TOKEN] = str(user_input.get(CONF_OPENLDBWS_TOKEN, "")).strip()
+                    user_input[CONF_KB_USERNAME] = str(user_input.get(CONF_KB_USERNAME, "")).strip()
+                    user_input[CONF_KB_PASSWORD] = str(user_input.get(CONF_KB_PASSWORD, "")).strip()
                     user_input[CONF_PEAK_INTERVAL] = int(user_input.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL))
                     user_input[CONF_OFF_PEAK_INTERVAL] = int(user_input.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL))
 
@@ -278,7 +288,7 @@ class RealtimeTrainsConfigFlow(config_entries.ConfigFlow):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=_user_schema(),
+            data_schema=_user_schema(user_input or {}),
             errors=errors,
         )
 
@@ -343,6 +353,18 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
         # Working copies; nothing is persisted until the save step.
         self._queries: list[dict[str, Any]] = queries
         self._settings: dict[str, Any] = {
+            CONF_OPENLDBWS_TOKEN: config_entry.options.get(
+                CONF_OPENLDBWS_TOKEN,
+                config_entry.data.get(CONF_OPENLDBWS_TOKEN, ""),
+            ),
+            CONF_KB_USERNAME: config_entry.options.get(
+                CONF_KB_USERNAME,
+                config_entry.data.get(CONF_KB_USERNAME, ""),
+            ),
+            CONF_KB_PASSWORD: config_entry.options.get(
+                CONF_KB_PASSWORD,
+                config_entry.data.get(CONF_KB_PASSWORD, ""),
+            ),
             CONF_AUTOADJUSTSCANS: bool(
                 config_entry.options.get(
                     CONF_AUTOADJUSTSCANS,
@@ -379,6 +401,9 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
     def _settings_schema(self) -> vol.Schema:
         return vol.Schema(
             {
+                vol.Optional(CONF_OPENLDBWS_TOKEN, default=self._settings[CONF_OPENLDBWS_TOKEN]): cv.string,
+                vol.Optional(CONF_KB_USERNAME, default=self._settings[CONF_KB_USERNAME]): cv.string,
+                vol.Optional(CONF_KB_PASSWORD, default=self._settings[CONF_KB_PASSWORD]): cv.string,
                 vol.Optional(CONF_AUTOADJUSTSCANS, default=self._settings[CONF_AUTOADJUSTSCANS]): bool,
                 vol.Optional(CONF_PEAK_INTERVAL, default=self._settings[CONF_PEAK_INTERVAL]): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
                 vol.Optional(CONF_OFF_PEAK_INTERVAL, default=self._settings[CONF_OFF_PEAK_INTERVAL]): vol.All(vol.Coerce(int), vol.Range(min=30, max=21600)),
@@ -406,6 +431,9 @@ class RealtimeTrainsOptionsFlowHandler(config_entries.OptionsFlow):
 
             if not errors:
                 self._settings = {
+                    CONF_OPENLDBWS_TOKEN: str(user_input.get(CONF_OPENLDBWS_TOKEN, "")).strip(),
+                    CONF_KB_USERNAME: str(user_input.get(CONF_KB_USERNAME, "")).strip(),
+                    CONF_KB_PASSWORD: str(user_input.get(CONF_KB_PASSWORD, "")).strip(),
                     CONF_AUTOADJUSTSCANS: bool(user_input.get(CONF_AUTOADJUSTSCANS, False)),
                     CONF_PEAK_INTERVAL: int(user_input.get(CONF_PEAK_INTERVAL, DEFAULT_PEAK_INTERVAL)),
                     CONF_OFF_PEAK_INTERVAL: int(user_input.get(CONF_OFF_PEAK_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL)),

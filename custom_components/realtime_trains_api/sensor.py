@@ -45,6 +45,10 @@ from .const import (
     HHMM_PATTERN,
     CONTRACT_VERSION,
     ATTR_CONTRACT_VERSION,
+    ATTR_SERVICE_STATUS,
+    ATTR_STATION_MESSAGES,
+    ATTR_DISRUPTIONS,
+    SERVICE_STATUS_NORMAL,
 )
 from .normalization import coerce_positive_int, coerce_time_offset, split_csv, parse_time_windows
 from .sensor_helpers import (
@@ -305,6 +309,8 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
             ATTR_PINNED_TRAIN,
             ATTR_NEXT_UPDATE_AT,
             ATTR_LAST_SUCCESSFUL_UPDATE,
+            ATTR_STATION_MESSAGES,
+            ATTR_DISRUPTIONS,
         }
     )
 
@@ -379,6 +385,10 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
             attrs[ATTR_ERROR] = data.get("error")
             if data.get("pinned_train") is not None:
                 attrs[ATTR_PINNED_TRAIN] = data["pinned_train"]
+
+            attrs[ATTR_SERVICE_STATUS] = data.get(ATTR_SERVICE_STATUS, SERVICE_STATUS_NORMAL)
+            attrs[ATTR_STATION_MESSAGES] = data.get(ATTR_STATION_MESSAGES, [])
+            attrs[ATTR_DISRUPTIONS] = data.get(ATTR_DISRUPTIONS, [])
                 
         attrs[ATTR_CURRENT_POLLING_INTERVAL] = self.coordinator.current_polling_interval
         if getattr(self.coordinator, "last_update_time", None):

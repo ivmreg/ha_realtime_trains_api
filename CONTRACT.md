@@ -37,8 +37,22 @@ All display clock times are normalized `"HH:MM"` 24-hour strings.
 | `data_stale` | boolean | True while serving last-known data because the RTT API is down or rate-limited |
 | `last_successful_update` | ISO datetime string | Only after at least one successful refresh |
 | `error` | string \| null | Error status string when journey enrichment failed (e.g. `"Rate Limited"`) |
+| `service_status` | string | Canonical rail status enum: `"normal"` \| `"delayed"` \| `"disrupted"` \| `"engineering_work"` \| `"station_closed"` \| `"no_departures"` |
+| `station_messages` | list[string] | Additive station-level announcements/NRCC notices |
+| `disruptions` | list[object] | Additive route/station disruption incidents (see schema below) |
 
 The sensor **state** is the integer minutes until the next matching departure, or `None` when there are none.
+
+## Disruption fields (`disruptions` items)
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Unique incident identifier |
+| `title` | string | Short headline/summary of the disruption |
+| `is_planned` | boolean | True for planned engineering work; false for unplanned incidents |
+| `summary` | string | Detailed explanation normalized from HTML/text |
+| `alternative_travel` | string \| null | Ticket acceptance or replacement bus guidance |
+| `url` | string \| null | Official National Rail info link (validated `http:`/`https:`) |
 
 ## Per-train fields (`next_trains` items)
 

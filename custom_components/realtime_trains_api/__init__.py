@@ -24,9 +24,13 @@ from .const import (
     DEFAULT_PEAK_INTERVAL,
     DEFAULT_OFF_PEAK_INTERVAL,
     DEFAULT_PEAK_WINDOWS,
+    CONF_OPENLDBWS_TOKEN,
+    CONF_KB_USERNAME,
+    CONF_KB_PASSWORD,
 )
 from .rtt_api import RealtimeTrainsApiClient
 from .coordinator import RealtimeTrainsUpdateCoordinator
+from .disruption import DarwinLdbClient, KnowledgeBaseClient, DisruptionManager
 from .normalization import (
     parse_time_windows,
     scrub_legacy_title,
@@ -60,8 +64,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     peak_windows_str = _entry_option(entry, CONF_PEAK_WINDOWS, DEFAULT_PEAK_WINDOWS)
     auto_adjust_scans = bool(_entry_option(entry, CONF_AUTOADJUSTSCANS, False))
 
+    openldbws_token = _entry_option(entry, CONF_OPENLDBWS_TOKEN)
+    kb_username = _entry_option(entry, CONF_KB_USERNAME)
+    kb_password = _entry_option(entry, CONF_KB_PASSWORD)
+
     client = async_get_clientsession(hass)
     api_client = RealtimeTrainsApiClient(client, token, refresh_token)
+
+    darwin_client = DarwinLdbClient(client, openldbws_token) if openldbws_token else None
+    kb_client = (
+        KnowledgeBaseClient(client, kb_username, kb_password)
+        if (kb_username and kb_password)
+        else None
+    )
+    disruption_manager = DisruptionManager(darwin_client, kb_client)
 
     coordinator = RealtimeTrainsUpdateCoordinator(
         hass=hass,
@@ -74,6 +90,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         off_peak_interval=off_peak_interval,
         peak_windows=parse_time_windows(peak_windows_str),
         auto_adjust_scans=auto_adjust_scans,
+        disruption_manager=disruption_manager,
     )
 
     await coordinator.async_config_entry_first_refresh()
