@@ -1,6 +1,7 @@
 """Unit tests for disruption module in realtime_trains_api."""
 from datetime import datetime, timezone, timedelta
 import logging
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
@@ -15,12 +16,14 @@ from custom_components.realtime_trains_api.disruption import (
     parse_incident_datetime,
     is_incident_active,
     incident_matches_crs,
+    incident_mentions_station,
     is_explicit_current_closure,
     is_explicit_current_engineering_work,
     compute_service_status,
     DarwinLdbClient,
     KnowledgeBaseClient,
     DisruptionManager,
+    DisruptionQueryResult,
     KB_AUTH_URL,
     KB_INCIDENTS_URL,
     UK_TZ,
@@ -43,6 +46,9 @@ from custom_components.realtime_trains_api.const import (
     KB_STATUS_INVALID_RESPONSE,
     ATTR_KB_CONNECTION_STATUS,
     ATTR_KB_LAST_SUCCESSFUL_CHECK,
+    ATTR_KB_SNAPSHOT_INCIDENT_COUNT,
+    ATTR_KB_ACTIVE_INCIDENT_COUNT,
+    ATTR_KB_STATION_MENTION_COUNT,
 )
 
 
@@ -1906,3 +1912,512 @@ async def test_coordinator_blackheath_station_closed_contract_integration():
     assert disruption["is_planned"] is True
     assert disruption["url"] == "https://www.nationalrail.co.uk/engineering-works/lewisham-26-sep-20260926/"
     assert "Replacement buses" in disruption["alternative_travel"]
+    # Observability counts for Blackheath station closed snapshot
+    assert attrs[ATTR_KB_SNAPSHOT_INCIDENT_COUNT] == 1
+    assert attrs[ATTR_KB_ACTIVE_INCIDENT_COUNT] == 1
+    assert attrs[ATTR_KB_STATION_MENTION_COUNT] == 1
+
+
+# =========================================================================
+# KB Snapshot Observability & Diagnostic Tests
+# =========================================================================
+
+def test_incident_mentions_station_semantics():
+    """Verify bounded exact token matching across CRS and station names in title, summary, and routes."""
+    # 1. Exact CRS in affects_stations
+    inc_affects = {
+        "id": "1",
+        "title": "Unrelated title",
+        "summary": "Unrelated summary",
+        "routes_affected": "",
+        "affects_stations": {"BKH", "VIC"},
+    }
+    assert incident_mentions_station(inc_affects, "BKH") is True
+    assert incident_mentions_station(inc_affects, "WAT") is False
+
+    # 2. Bounded uppercase CRS in text targets
+    inc_crs_summary = {
+        "id": "2",
+        "title": "Maintenance",
+        "summary": "Trains diverted via BKH all weekend.",
+        "routes_affected": "",
+        "affects_stations": set(),
+    }
+    assert incident_mentions_station(inc_crs_summary, "BKH") is True
+    # Substring in random word should NOT match
+    inc_crs_substring = {
+        "id": "3",
+        "title": "Maintenance",
+        "summary": "Trains via SUBKHAN route.",
+        "routes_affected": "",
+        "affects_stations": set(),
+    }
+    assert incident_mentions_station(inc_crs_substring, "BKH") is False
+
+    # 3. Station name matching in title, summary, routes
+    inc_name_routes = {
+        "id": "4",
+        "title": "Southeastern disruption",
+        "summary": "General engineering work",
+        "routes_affected": "Services via Blackheath",
+        "affects_stations": set(),
+    }
+    assert incident_mentions_station(inc_name_routes, "BKH", ["Blackheath"]) is True
+    # Fallback for BKH even without explicit station names provided
+    assert incident_mentions_station(inc_name_routes, "BKH") is True
+
+    # 4. Word boundary protection for short station names
+    inc_lee_leeds = {
+        "id": "5",
+        "title": "Disruption at Leeds",
+        "summary": "Major delays around Leeds station.",
+        "routes_affected": "Leeds to York",
+        "affects_stations": {"LDS"},
+    }
+    # "Lee" station should NOT match "Leeds"
+    assert incident_mentions_station(inc_lee_leeds, "LEE", ["Lee"]) is False
+
+    inc_lee_real = {
+        "id": "6",
+        "title": "Disruption at Lee",
+        "summary": "Points failure at Lee station.",
+        "routes_affected": "",
+        "affects_stations": {"LEE"},
+    }
+    assert incident_mentions_station(inc_lee_real, "LEE", ["Lee"]) is True
+
+    # 5. Station name with "Station" suffix stripped
+    inc_blackheath_desc = {
+        "id": "7",
+        "title": "Signal failure",
+        "summary": "Disruption around Blackheath due to a power outage.",
+        "routes_affected": "",
+        "affects_stations": set(),
+    }
+    assert incident_mentions_station(inc_blackheath_desc, "BKH", ["Blackheath Railway Station"]) is True
+
+    # 6. Distinction: Matcher miss where summary mentions station without closure pattern
+    inc_matcher_miss = {
+        "id": "8",
+        "title": "Information notice",
+        "summary": "Customers traveling from Blackheath should check before traveling.",
+        "routes_affected": "",
+        "affects_stations": set(),
+    }
+    # Matcher rejects because summary does not indicate closure or route disruption
+    assert incident_matches_crs(inc_matcher_miss, "BKH", ["Blackheath"]) is False
+    # Observability station mention STILL catches it!
+    assert incident_mentions_station(inc_matcher_miss, "BKH", ["Blackheath"]) is True
+
+
+@pytest.mark.asyncio
+async def test_kb_observability_counts_connected_and_active():
+    """Verify snapshot, active, and station mention counts with mixed validity periods."""
+    now = datetime(2026, 9, 26, 22, 0, tzinfo=UK_TZ)
+
+    # Incident 1: Active, mentions Blackheath in routes
+    # Incident 2: Inactive (expired yesterday), mentions Blackheath
+    # Incident 3: Active, unrelated (Victoria only)
+    kb_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="INC_ACTIVE_BKH">
+    <Header>Planned Works</Header>
+    <IncidentDescription>Maintenance between Lewisham and Dartford via Blackheath</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-27T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+    <Affects>
+      <RoutesAffected>Southeastern services via Blackheath</RoutesAffected>
+    </Affects>
+  </PtIncident>
+  <PtIncident id="INC_EXPIRED_BKH">
+    <Header>Past Incident</Header>
+    <IncidentDescription>Track work at Blackheath yesterday</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-25T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-25T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+  </PtIncident>
+  <PtIncident id="INC_ACTIVE_VIC">
+    <Header>Victoria Delays</Header>
+    <IncidentDescription>Signalling fault at London Victoria</IncidentDescription>
+    <PlannedIncident>false</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T20:00:00+01:00</StartTime>
+        <EndTime>2026-09-26T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+    <Affects>
+      <Station><CrsCode>VIC</CrsCode></Station>
+    </Affects>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "test_tok"}
+    mock_auth_resp.text.return_value = ""
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = kb_xml
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.post.return_value = mock_auth_ctx
+    session.get.return_value = mock_feed_ctx
+
+    kb_client = KnowledgeBaseClient(session, username="u", password="p")
+    manager = DisruptionManager(kb_client=kb_client)
+
+    result = await manager.get_disruptions_for_query(
+        origin="BKH",
+        destination=None,
+        next_trains=[],
+        now=now,
+    )
+
+    # 1. Backwards-compatible tuple unpacking (3 items)
+    status, messages, disruptions = result
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+
+    # 2. Observability counts on DisruptionQueryResult
+    # Total parsed in snapshot = 3
+    assert result.kb_snapshot_incident_count == 3
+    assert manager.kb_snapshot_incident_count == 3
+    # Active at 22:00 = 2 (INC_ACTIVE_BKH and INC_ACTIVE_VIC; INC_EXPIRED_BKH is excluded)
+    assert result.kb_active_incident_count == 2
+    # Active with Blackheath mention = 1 (INC_ACTIVE_BKH only)
+    assert result.kb_station_mention_count == 1
+
+    # 3. Query for VIC: station mention count is 1 (INC_ACTIVE_VIC)
+    result_vic = await manager.get_disruptions_for_query(
+        origin="VIC",
+        destination=None,
+        next_trains=[],
+        now=now,
+    )
+    assert result_vic.kb_snapshot_incident_count == 3
+    assert result_vic.kb_active_incident_count == 2
+    assert result_vic.kb_station_mention_count == 1
+
+    # 4. Query for unrelated station (WAT): station mention count is 0
+    result_wat = await manager.get_disruptions_for_query(
+        origin="WAT",
+        destination=None,
+        next_trains=[],
+        now=now,
+    )
+    assert result_wat.kb_snapshot_incident_count == 3
+    assert result_wat.kb_active_incident_count == 2
+    assert result_wat.kb_station_mention_count == 0
+
+
+@pytest.mark.asyncio
+async def test_kb_observability_distinguishes_feed_miss_from_matcher_miss():
+    """Verify that counts clearly distinguish a missing incident in the feed from a matcher miss."""
+    now = datetime(2026, 9, 26, 22, 0, tzinfo=UK_TZ)
+
+    # Scenario A: Feed Miss (incident active, but static feed has no mention of Blackheath at all)
+    feed_miss_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="NRE_LEWISHAM_ONLY">
+    <Header>Disruption through Lewisham</Header>
+    <IncidentDescription>Track work between Lewisham and Charlton.</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-27T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+    <Affects><RoutesAffected>Routes via Lewisham</RoutesAffected></Affects>
+  </PtIncident>
+</Incidents>"""
+
+    # Scenario B: Matcher Miss (incident mentions Blackheath in summary, but not matching closure syntax)
+    matcher_miss_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="NRE_BKH_MENTION_NOT_MATCHED">
+    <Header>Travel Advice</Header>
+    <IncidentDescription>Engineering works in South East London. Customers for Blackheath should use local buses.</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-27T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+    <Affects><RoutesAffected>South East routes</RoutesAffected></Affects>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "tok"}
+    mock_auth_resp.text.return_value = ""
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    # 1. Test Feed Miss
+    feed_resp_a = AsyncMock()
+    feed_resp_a.status = 200
+    feed_resp_a.read.return_value = feed_miss_xml
+    feed_ctx_a = MagicMock()
+    feed_ctx_a.__aenter__ = AsyncMock(return_value=feed_resp_a)
+    feed_ctx_a.__aexit__ = AsyncMock(return_value=None)
+
+    sess_a = MagicMock()
+    sess_a.post.return_value = mock_auth_ctx
+    sess_a.get.return_value = feed_ctx_a
+
+    manager_a = DisruptionManager(kb_client=KnowledgeBaseClient(sess_a, username="u", password="p"))
+    res_a = await manager_a.get_disruptions_for_query(
+        origin="BKH", destination=None, next_trains=[], now=now
+    )
+    # Feed miss diagnosis: snapshot > 0, active > 0, station_mention == 0
+    assert res_a.kb_snapshot_incident_count == 1
+    assert res_a.kb_active_incident_count == 1
+    assert res_a.kb_station_mention_count == 0
+    assert res_a.disruptions == []
+
+    # 2. Test Matcher Miss
+    feed_resp_b = AsyncMock()
+    feed_resp_b.status = 200
+    feed_resp_b.read.return_value = matcher_miss_xml
+    feed_ctx_b = MagicMock()
+    feed_ctx_b.__aenter__ = AsyncMock(return_value=feed_resp_b)
+    feed_ctx_b.__aexit__ = AsyncMock(return_value=None)
+
+    sess_b = MagicMock()
+    sess_b.post.return_value = mock_auth_ctx
+    sess_b.get.return_value = feed_ctx_b
+
+    manager_b = DisruptionManager(kb_client=KnowledgeBaseClient(sess_b, username="u", password="p"))
+    res_b = await manager_b.get_disruptions_for_query(
+        origin="BKH", destination=None, next_trains=[], now=now
+    )
+    # Matcher miss diagnosis: snapshot > 0, active > 0, station_mention >= 1, BUT disruptions == []
+    assert res_b.kb_snapshot_incident_count == 1
+    assert res_b.kb_active_incident_count == 1
+    assert res_b.kb_station_mention_count == 1
+    assert res_b.disruptions == []
+
+
+@pytest.mark.asyncio
+async def test_kb_observability_counts_unconfigured_and_failed():
+    """Verify all three counts are None when KB is unconfigured, authentication fails, or feed errors."""
+    now = datetime(2026, 9, 26, 22, 0, tzinfo=UK_TZ)
+
+    # 1. Unconfigured
+    dm_unconfigured = DisruptionManager(kb_client=None)
+    res_unconf = await dm_unconfigured.get_disruptions_for_query(
+        origin="BKH", destination=None, next_trains=[], now=now
+    )
+    assert res_unconf.kb_snapshot_incident_count is None
+    assert res_unconf.kb_active_incident_count is None
+    assert res_unconf.kb_station_mention_count is None
+    assert dm_unconfigured.kb_snapshot_incident_count is None
+
+    # 2. Auth failed (HTTP 401)
+    mock_401 = AsyncMock()
+    mock_401.status = 401
+    mock_401_ctx = MagicMock()
+    mock_401_ctx.__aenter__ = AsyncMock(return_value=mock_401)
+    mock_401_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    sess_401 = MagicMock()
+    sess_401.post.return_value = mock_401_ctx
+    dm_auth_fail = DisruptionManager(kb_client=KnowledgeBaseClient(sess_401, username="u", password="bad"))
+    res_auth_fail = await dm_auth_fail.get_disruptions_for_query(
+        origin="BKH", destination=None, next_trains=[], now=now
+    )
+    assert res_auth_fail.kb_snapshot_incident_count is None
+    assert res_auth_fail.kb_active_incident_count is None
+    assert res_auth_fail.kb_station_mention_count is None
+    assert dm_auth_fail.kb_snapshot_incident_count is None
+
+    # 3. Failed refresh after previous success clears counts to None
+    good_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="1">
+    <Header>Incident</Header>
+    <IncidentDescription>Valid incident</IncidentDescription>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth_200 = AsyncMock()
+    mock_auth_200.status = 200
+    mock_auth_200.headers = {"X-Auth-Token": "tok"}
+    mock_auth_200.text.return_value = ""
+    mock_auth_200_ctx = MagicMock()
+    mock_auth_200_ctx.__aenter__ = AsyncMock(return_value=mock_auth_200)
+    mock_auth_200_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    feed_200 = AsyncMock()
+    feed_200.status = 200
+    feed_200.read.return_value = good_xml
+    feed_200_ctx = MagicMock()
+    feed_200_ctx.__aenter__ = AsyncMock(return_value=feed_200)
+    feed_200_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    feed_500 = AsyncMock()
+    feed_500.status = 500
+    feed_500_ctx = MagicMock()
+    feed_500_ctx.__aenter__ = AsyncMock(return_value=feed_500)
+    feed_500_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    sess_refresh = MagicMock()
+    sess_refresh.post.return_value = mock_auth_200_ctx
+    sess_refresh.get.side_effect = [feed_200_ctx, feed_500_ctx]
+
+    dm_refresh = DisruptionManager(
+        kb_client=KnowledgeBaseClient(sess_refresh, username="u", password="p"),
+        cache_ttl_seconds=10,
+    )
+    # First fetch succeeds: count is 1
+    res1 = await dm_refresh.get_disruptions_for_query(origin="BKH", destination=None, next_trains=[], now=now)
+    assert res1.kb_snapshot_incident_count == 1
+    assert dm_refresh.kb_snapshot_incident_count == 1
+
+    # Next fetch fails with HTTP 500: counts must clear to None immediately
+    with patch("time.time", return_value=time.time() + 100):
+        res2 = await dm_refresh.get_disruptions_for_query(origin="BKH", destination=None, next_trains=[], now=now)
+        assert res2.kb_snapshot_incident_count is None
+        assert res2.kb_active_incident_count is None
+        assert res2.kb_station_mention_count is None
+        assert dm_refresh.kb_snapshot_incident_count is None
+
+
+@pytest.mark.asyncio
+async def test_station_sensor_kb_counts_integration():
+    """Verify that RealtimeTrainLiveTrainTimeSensor exposes current numeric KB counts and None on failure."""
+    from custom_components.realtime_trains_api.sensor import RealtimeTrainLiveTrainTimeSensor
+    from custom_components.realtime_trains_api.coordinator import RealtimeTrainsUpdateCoordinator
+    from custom_components.realtime_trains_api.rtt_api import RealtimeTrainsApiClient
+
+    now = datetime(2026, 9, 26, 22, 0, tzinfo=UK_TZ)
+
+    mock_hass = MagicMock()
+    mock_session = MagicMock()
+    api_client = RealtimeTrainsApiClient(mock_session, token="tok")
+    # Empty departure board at Blackheath
+    api_client.fetch_location_services = AsyncMock(return_value={
+        "location": {"name": "Blackheath", "crs": "BKH"},
+        "services": [],
+    })
+
+    kb_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="INC1">
+    <Header>Maintenance</Header>
+    <IncidentDescription>Work taking place at Blackheath</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-27T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+  </PtIncident>
+  <PtIncident id="INC2">
+    <Header>Other</Header>
+    <IncidentDescription>Work at Dartford</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-09-26T00:00:00+01:00</StartTime>
+        <EndTime>2026-09-27T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth_resp = AsyncMock()
+    mock_auth_resp.status = 200
+    mock_auth_resp.headers = {"X-Auth-Token": "secret_token_123"}
+    mock_auth_resp.text.return_value = ""
+    mock_auth_ctx = MagicMock()
+    mock_auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth_resp)
+    mock_auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_feed_resp = AsyncMock()
+    mock_feed_resp.status = 200
+    mock_feed_resp.read.return_value = kb_xml
+    mock_feed_ctx = MagicMock()
+    mock_feed_ctx.__aenter__ = AsyncMock(return_value=mock_feed_resp)
+    mock_feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    kb_sess = MagicMock()
+    kb_sess.post.return_value = mock_auth_ctx
+    kb_sess.get.return_value = mock_feed_ctx
+
+    kb_client = KnowledgeBaseClient(kb_sess, username="secret_user", password="secret_password")
+    disruption_manager = DisruptionManager(kb_client=kb_client)
+
+    coordinator = RealtimeTrainsUpdateCoordinator(
+        hass=mock_hass,
+        logger=MagicMock(),
+        name="test_bkh",
+        update_interval=timedelta(seconds=60),
+        api=api_client,
+        queries=[{"origin": "BKH", "destination": None}],
+        disruption_manager=disruption_manager,
+    )
+
+    sensor = RealtimeTrainLiveTrainTimeSensor(
+        coordinator=coordinator,
+        sensor_name="BKH Board",
+        query_key="BKH_all_all_0",
+        journey_start="BKH",
+        journey_end=None,
+        timeoffset=timedelta(),
+        platforms_of_interest=[],
+        entry_id="bkh_entry",
+        query_index=0,
+    )
+
+    # 1. Before coordinator update: all counts are None
+    attrs_before = sensor.extra_state_attributes
+    assert attrs_before[ATTR_KB_SNAPSHOT_INCIDENT_COUNT] is None
+    assert attrs_before[ATTR_KB_ACTIVE_INCIDENT_COUNT] is None
+    assert attrs_before[ATTR_KB_STATION_MENTION_COUNT] is None
+
+    # 2. After coordinator update with empty board: counts are accurate integers
+    with patch("custom_components.realtime_trains_api.coordinator.dt_util.now", return_value=now):
+        coordinator.data = await coordinator._async_update_data()
+
+    attrs_after = sensor.extra_state_attributes
+    assert attrs_after[ATTR_KB_CONNECTION_STATUS] == KB_STATUS_CONNECTED
+    assert attrs_after[ATTR_KB_SNAPSHOT_INCIDENT_COUNT] == 2
+    assert attrs_after[ATTR_KB_ACTIVE_INCIDENT_COUNT] == 2
+    assert attrs_after[ATTR_KB_STATION_MENTION_COUNT] == 1
+
+    # 3. Verify security: credentials, tokens, and raw incident payloads MUST NOT be exposed
+    attrs_str = str(attrs_after)
+    assert "secret_user" not in attrs_str
+    assert "secret_password" not in attrs_str
+    assert "secret_token_123" not in attrs_str
+    assert "INC1" not in attrs_after[ATTR_KB_SNAPSHOT_INCIDENT_COUNT].__class__.__name__

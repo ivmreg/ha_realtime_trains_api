@@ -40,6 +40,11 @@ All display clock times are normalized `"HH:MM"` 24-hour strings.
 | `service_status` | string | Canonical rail status enum: `"normal"` \| `"delayed"` \| `"disrupted"` \| `"engineering_work"` \| `"station_closed"` \| `"no_departures"` |
 | `station_messages` | list[string] | Additive station-level announcements/NRCC notices |
 | `disruptions` | list[object] | Additive route/station disruption incidents (see schema below) |
+| `kb_connection_status` | string | Knowledgebase connection status: `"not_configured"`, `"pending"`, `"connected"`, `"authentication_failed"`, `"feed_error"`, `"request_error"`, `"invalid_response"` |
+| `kb_last_successful_check` | ISO datetime string \| null | Timestamp of last successful KB incidents check |
+| `kb_snapshot_incident_count` | integer \| null | Total parsed incidents in latest successful KB snapshot (`null` if unconfigured or failed) |
+| `kb_active_incident_count` | integer \| null | Parsed incidents active at query time (`null` if unconfigured or failed) |
+| `kb_station_mention_count` | integer \| null | Active incidents with bounded exact station name or CRS mention in title/summary/routes (`null` if unconfigured or failed) |
 
 The sensor **state** is the integer minutes until the next matching departure, or `None` when there are none.
 

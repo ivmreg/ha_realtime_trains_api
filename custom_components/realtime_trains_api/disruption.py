@@ -396,6 +396,57 @@ def incident_matches_crs(
     return False
 
 
+def incident_mentions_station(
+    incident: dict[str, Any],
+    crs: str,
+    station_names: list[str] | None = None,
+) -> bool:
+    """Check if an incident mentions a station by bounded exact CRS code or station name anywhere in title, summary, or routes.
+
+    Does not apply match or closure decisions; purely checks presence of bounded station tokens.
+    """
+    crs_upper = crs.strip().upper() if crs else ""
+    if not crs_upper:
+        return False
+
+    affects_stations = incident.get("affects_stations", set())
+    if crs_upper in affects_stations:
+        return True
+
+    names_to_check: list[str] = []
+    if station_names:
+        for name in station_names:
+            clean_name = name.strip()
+            if len(clean_name) >= 3 and clean_name not in names_to_check:
+                names_to_check.append(clean_name)
+            clean_base = re.sub(
+                r"\s+(?:Railway\s+|Rail\s+)?Station$", "", clean_name, flags=re.IGNORECASE
+            ).strip()
+            if len(clean_base) >= 3 and clean_base not in names_to_check:
+                names_to_check.append(clean_base)
+
+    if not names_to_check and crs_upper == "BKH":
+        names_to_check.append("Blackheath")
+
+    text_parts = [
+        incident.get("title") or "",
+        incident.get("summary") or incident.get("description") or "",
+        incident.get("routes_affected") or incident.get("routes") or "",
+    ]
+    combined_text = " ".join(t for t in text_parts if t)
+    if not combined_text:
+        return False
+
+    if re.search(rf"\b{re.escape(crs_upper)}\b", combined_text):
+        return True
+
+    for name in names_to_check:
+        if re.search(rf"\b{re.escape(name)}\b", combined_text, re.IGNORECASE):
+            return True
+
+    return False
+
+
 def is_explicit_current_closure(text: str) -> bool:
     """Check if text contains explicit reliable evidence of CURRENT station closure."""
     if not text:
@@ -1260,6 +1311,28 @@ class KnowledgeBaseClient:
         }
 
 
+class DisruptionQueryResult(tuple):
+    """Result of get_disruptions_for_query, backwards-compatible as a 3-tuple (service_status, station_messages, disruptions)."""
+
+    def __new__(
+        cls,
+        service_status: str,
+        station_messages: list[str],
+        disruptions: list[dict[str, Any]],
+        kb_snapshot_incident_count: int | None = None,
+        kb_active_incident_count: int | None = None,
+        kb_station_mention_count: int | None = None,
+    ) -> DisruptionQueryResult:
+        instance = super().__new__(cls, (service_status, station_messages, disruptions))
+        instance.service_status = service_status
+        instance.station_messages = station_messages
+        instance.disruptions = disruptions
+        instance.kb_snapshot_incident_count = kb_snapshot_incident_count
+        instance.kb_active_incident_count = kb_active_incident_count
+        instance.kb_station_mention_count = kb_station_mention_count
+        return instance
+
+
 class DisruptionManager:
     """Manages disruption queries, caching (15-30m), and service status calculation."""
 
@@ -1298,6 +1371,13 @@ class DisruptionManager:
         if isinstance(last_check, datetime):
             return last_check
         return None
+
+    @property
+    def kb_snapshot_incident_count(self) -> int | None:
+        """Return the number of parsed incidents in the latest snapshot if connected, else None."""
+        if self.kb_connection_status != KB_STATUS_CONNECTED or not self._kb_incidents_cache:
+            return None
+        return len(self._kb_incidents_cache[1])
 
     async def get_station_messages(self, crs: str) -> list[str]:
         """Get cached or fresh Darwin station messages."""
@@ -1390,11 +1470,33 @@ class DisruptionManager:
                     if d_msg not in all_messages:
                         all_messages.append(d_msg)
 
+        # Knowledgebase connection and snapshot observability
+        is_connected = (self.kb_connection_status == KB_STATUS_CONNECTED)
+        if not is_connected:
+            snapshot_count = None
+            active_count = None
+            station_mention_count = None
+        else:
+            snapshot_count = len(raw_incidents)
+            active_count = 0
+            station_mention_count = 0
+
         disruptions: list[dict[str, Any]] = []
         for inc in raw_incidents:
             # Filter active incidents using timezone-aware now
             if not is_incident_active(inc, now):
                 continue
+
+            if is_connected:
+                active_count += 1
+                mentions_origin = incident_mentions_station(inc, origin, origin_names)
+                mentions_dest = (
+                    incident_mentions_station(inc, destination, dest_names)
+                    if destination
+                    else False
+                )
+                if mentions_origin or mentions_dest:
+                    station_mention_count += 1
 
             matches_origin = incident_matches_crs(inc, origin, origin_names)
             matches_dest = (
@@ -1425,4 +1527,11 @@ class DisruptionManager:
             destination_station_names=dest_names,
             destination_messages=correlated_dest_messages,
         )
-        return service_status, all_messages, disruptions
+        return DisruptionQueryResult(
+            service_status,
+            all_messages,
+            disruptions,
+            kb_snapshot_incident_count=snapshot_count,
+            kb_active_incident_count=active_count,
+            kb_station_mention_count=station_mention_count,
+        )

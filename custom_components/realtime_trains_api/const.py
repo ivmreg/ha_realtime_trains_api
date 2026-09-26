@@ -97,6 +97,9 @@ ATTR_STATION_MESSAGES = "station_messages"
 ATTR_DISRUPTIONS = "disruptions"
 ATTR_KB_CONNECTION_STATUS = "kb_connection_status"
 ATTR_KB_LAST_SUCCESSFUL_CHECK = "kb_last_successful_check"
+ATTR_KB_SNAPSHOT_INCIDENT_COUNT = "kb_snapshot_incident_count"
+ATTR_KB_ACTIVE_INCIDENT_COUNT = "kb_active_incident_count"
+ATTR_KB_STATION_MENTION_COUNT = "kb_station_mention_count"
 
 # Disruption cache TTL (15 minutes)
 DEFAULT_DISRUPTION_CACHE_SECONDS = 900

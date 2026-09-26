@@ -503,21 +503,30 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             destination_station_name = self._station_name_cache[destination]
 
         try:
-            service_status, station_messages, disruptions = (
-                await self.disruption_manager.get_disruptions_for_query(
-                    origin,
-                    destination,
-                    next_trains,
-                    now,
-                    origin_station_name=origin_station_name,
-                    destination_station_name=destination_station_name,
-                )
+            disruption_res = await self.disruption_manager.get_disruptions_for_query(
+                origin,
+                destination,
+                next_trains,
+                now,
+                origin_station_name=origin_station_name,
+                destination_station_name=destination_station_name,
             )
+            service_status, station_messages, disruptions = (
+                disruption_res[0],
+                disruption_res[1],
+                disruption_res[2],
+            )
+            kb_snapshot_count = getattr(disruption_res, "kb_snapshot_incident_count", None)
+            kb_active_count = getattr(disruption_res, "kb_active_incident_count", None)
+            kb_mention_count = getattr(disruption_res, "kb_station_mention_count", None)
         except Exception as err:
             _LOGGER.debug("Disruption fetch failed for %s: %s", origin, type(err).__name__)
             service_status = compute_service_status(next_trains, [], [])
             station_messages = []
             disruptions = []
+            kb_snapshot_count = None
+            kb_active_count = None
+            kb_mention_count = None
 
         kb_status = getattr(self.disruption_manager, "kb_connection_status", KB_STATUS_NOT_CONFIGURED)
         if not isinstance(kb_status, str):
@@ -540,6 +549,9 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "disruptions": disruptions,
             "kb_connection_status": kb_status,
             "kb_last_successful_check": kb_last_check_str,
+            "kb_snapshot_incident_count": kb_snapshot_count,
+            "kb_active_incident_count": kb_active_count,
+            "kb_station_mention_count": kb_mention_count,
         }
 
     async def _enrich_journey_data(

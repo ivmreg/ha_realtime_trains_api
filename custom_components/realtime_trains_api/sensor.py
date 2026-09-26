@@ -50,6 +50,9 @@ from .const import (
     ATTR_DISRUPTIONS,
     ATTR_KB_CONNECTION_STATUS,
     ATTR_KB_LAST_SUCCESSFUL_CHECK,
+    ATTR_KB_SNAPSHOT_INCIDENT_COUNT,
+    ATTR_KB_ACTIVE_INCIDENT_COUNT,
+    ATTR_KB_STATION_MENTION_COUNT,
     KB_STATUS_NOT_CONFIGURED,
     SERVICE_STATUS_NORMAL,
 )
@@ -312,6 +315,9 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
         - "request_error": Network, timeout, or connection failure.
         - "invalid_response": Unparseable response or missing token.
     - kb_last_successful_check: ISO 8601 timestamp of last successful KB incidents check.
+    - kb_snapshot_incident_count: Total parsed incidents in latest successful KB snapshot (None if unconfigured or failed).
+    - kb_active_incident_count: Parsed KB incidents active at query time (None if unconfigured or failed).
+    - kb_station_mention_count: Active KB incidents with bounded exact station name or CRS mention anywhere in title, summary, or routes (None if unconfigured or failed).
     """
 
     _attr_icon = "mdi:train"
@@ -409,6 +415,9 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
                 ATTR_KB_CONNECTION_STATUS, KB_STATUS_NOT_CONFIGURED
             )
             attrs[ATTR_KB_LAST_SUCCESSFUL_CHECK] = data.get(ATTR_KB_LAST_SUCCESSFUL_CHECK)
+            attrs[ATTR_KB_SNAPSHOT_INCIDENT_COUNT] = data.get(ATTR_KB_SNAPSHOT_INCIDENT_COUNT)
+            attrs[ATTR_KB_ACTIVE_INCIDENT_COUNT] = data.get(ATTR_KB_ACTIVE_INCIDENT_COUNT)
+            attrs[ATTR_KB_STATION_MENTION_COUNT] = data.get(ATTR_KB_STATION_MENTION_COUNT)
         else:
             disruption_mgr = getattr(self.coordinator, "disruption_manager", None)
             if disruption_mgr:
@@ -422,6 +431,9 @@ class RealtimeTrainLiveTrainTimeSensor(CoordinatorEntity, SensorEntity):
             else:
                 attrs[ATTR_KB_CONNECTION_STATUS] = KB_STATUS_NOT_CONFIGURED
                 attrs[ATTR_KB_LAST_SUCCESSFUL_CHECK] = None
+            attrs[ATTR_KB_SNAPSHOT_INCIDENT_COUNT] = None
+            attrs[ATTR_KB_ACTIVE_INCIDENT_COUNT] = None
+            attrs[ATTR_KB_STATION_MENTION_COUNT] = None
                 
         attrs[ATTR_CURRENT_POLLING_INTERVAL] = self.coordinator.current_polling_interval
         if getattr(self.coordinator, "last_update_time", None):
