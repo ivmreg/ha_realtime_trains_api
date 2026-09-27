@@ -358,6 +358,7 @@ def is_incident_active(incident: dict[str, Any], now: datetime) -> bool:
         # 2a. Weekend closure spanning across the entire weekend:
         if is_weekend:
             target_end = latest_end
+            closure_start = earliest_start
             text = " ".join([
                 str(incident.get("title") or ""),
                 str(incident.get("summary") or ""),
@@ -374,13 +375,27 @@ def is_incident_active(incident: dict[str, Any], now: datetime) -> bool:
                         sunday_date.year, sunday_date.month, sunday_date.day,
                         23, 59, 59, tzinfo=target_end.tzinfo or UK_TZ
                     )
-                elif target_end.weekday() == 6 and target_end.hour < 20:  # Early Sunday
+                elif target_end.weekday() == 6:  # Sunday
                     target_end = datetime(
                         target_end.year, target_end.month, target_end.day,
                         23, 59, 59, tzinfo=target_end.tzinfo or UK_TZ
                     )
 
-            if earliest_start <= now <= target_end:
+            covers_saturday = any(w in text for w in ("saturday", "sat", "weekend", "all weekend"))
+            if covers_saturday:
+                if closure_start.weekday() == 5 and closure_start.hour <= 12:
+                    closure_start = datetime(
+                        closure_start.year, closure_start.month, closure_start.day,
+                        0, 0, 0, tzinfo=closure_start.tzinfo or UK_TZ
+                    )
+                elif closure_start.weekday() == 6:  # Started on Sunday in validity periods
+                    sat_date = closure_start.date() - timedelta(days=1)
+                    closure_start = datetime(
+                        sat_date.year, sat_date.month, sat_date.day,
+                        0, 0, 0, tzinfo=closure_start.tzinfo or UK_TZ
+                    )
+
+            if closure_start <= now <= target_end:
                 return True
 
         # 2b. Overnight gap between consecutive validity periods:
@@ -419,6 +434,17 @@ def is_station_named_in_closure(text: str, station_name: str, crs: str | None = 
     clean_name = station_name.strip() if station_name else ""
     if len(clean_name) >= 3:
         tokens.append(clean_name)
+        base_name = re.sub(
+            r"[\s_]+(?:Railway\s+|Rail\s+)?Station$", "", clean_name, flags=re.IGNORECASE
+        ).strip()
+        if len(base_name) >= 3 and base_name not in tokens:
+            tokens.append(base_name)
+        spaced = clean_name.replace("_", " ").strip()
+        if len(spaced) >= 3 and spaced not in tokens:
+            tokens.append(spaced)
+        spaced_base = base_name.replace("_", " ").strip()
+        if len(spaced_base) >= 3 and spaced_base not in tokens:
+            tokens.append(spaced_base)
     clean_crs = crs.strip().upper() if crs else ""
     if len(clean_crs) == 3:
         tokens.append(clean_crs)
@@ -487,9 +513,20 @@ def incident_matches_crs(
             clean_name = name.strip()
             if len(clean_name) >= 3 and clean_name not in names_to_check:
                 names_to_check.append(clean_name)
+            base_name = re.sub(
+                r"[\s_]+(?:Railway\s+|Rail\s+)?Station$", "", clean_name, flags=re.IGNORECASE
+            ).strip()
+            if len(base_name) >= 3 and base_name not in names_to_check:
+                names_to_check.append(base_name)
+            spaced = clean_name.replace("_", " ").strip()
+            if len(spaced) >= 3 and spaced not in names_to_check:
+                names_to_check.append(spaced)
+            spaced_base = base_name.replace("_", " ").strip()
+            if len(spaced_base) >= 3 and spaced_base not in names_to_check:
+                names_to_check.append(spaced_base)
 
-    # Narrow fallback for Blackheath (BKH) if station name was not provided
-    if not names_to_check and crs_upper == "BKH":
+    # Narrow fallback for Blackheath (BKH)
+    if crs_upper == "BKH" and "Blackheath" not in names_to_check:
         names_to_check.append("Blackheath")
 
     if routes:
@@ -503,11 +540,16 @@ def incident_matches_crs(
             if re.search(rf"\b{re.escape(name)}\b", title, re.IGNORECASE):
                 return True
 
-    # Match station name in Description ONLY when associated with explicit closure list or direct closure phrase
-    desc = incident.get("summary", "") or incident.get("description", "")
-    if desc:
+    # Match station name in description/summary/alternative_travel when associated with explicit closure
+    desc_parts = [
+        str(incident.get("summary") or ""),
+        str(incident.get("description") or ""),
+        str(incident.get("alternative_travel") or ""),
+    ]
+    combined_desc = " ".join(p for p in desc_parts if p)
+    if combined_desc:
         for name in names_to_check:
-            if is_station_named_in_closure(desc, name, crs_upper):
+            if is_station_named_in_closure(combined_desc, name, crs_upper):
                 return True
 
     return False
@@ -537,12 +579,18 @@ def incident_mentions_station(
             if len(clean_name) >= 3 and clean_name not in names_to_check:
                 names_to_check.append(clean_name)
             clean_base = re.sub(
-                r"\s+(?:Railway\s+|Rail\s+)?Station$", "", clean_name, flags=re.IGNORECASE
+                r"[\s_]+(?:Railway\s+|Rail\s+)?Station$", "", clean_name, flags=re.IGNORECASE
             ).strip()
             if len(clean_base) >= 3 and clean_base not in names_to_check:
                 names_to_check.append(clean_base)
+            spaced = clean_name.replace("_", " ").strip()
+            if len(spaced) >= 3 and spaced not in names_to_check:
+                names_to_check.append(spaced)
+            spaced_base = clean_base.replace("_", " ").strip()
+            if len(spaced_base) >= 3 and spaced_base not in names_to_check:
+                names_to_check.append(spaced_base)
 
-    if not names_to_check and crs_upper == "BKH":
+    if crs_upper == "BKH" and "Blackheath" not in names_to_check:
         names_to_check.append("Blackheath")
 
     text_parts = [
@@ -611,22 +659,46 @@ def is_origin_closure(
     orig_tokens: set[str] = set()
     if origin:
         orig_tokens.add(origin.strip().lower())
+        if origin.strip().upper() == "BKH":
+            orig_tokens.add("blackheath")
     if origin_names:
         for o_name in origin_names:
             clean = o_name.strip().lower()
             if len(clean) >= 3:
                 orig_tokens.add(clean)
-    if not orig_tokens and origin and origin.strip().upper() == "BKH":
-        orig_tokens.add("blackheath")
+            clean_base = re.sub(
+                r"[\s_]+(?:railway\s+|rail\s+)?station$", "", clean, flags=re.IGNORECASE
+            ).strip()
+            if len(clean_base) >= 3:
+                orig_tokens.add(clean_base)
+            spaced = clean.replace("_", " ").strip()
+            if len(spaced) >= 3:
+                orig_tokens.add(spaced)
+            spaced_base = clean_base.replace("_", " ").strip()
+            if len(spaced_base) >= 3:
+                orig_tokens.add(spaced_base)
 
     dest_tokens: set[str] = set()
     if destination:
         dest_tokens.add(destination.strip().lower())
+        if destination.strip().upper() == "BKH":
+            dest_tokens.add("blackheath")
     if dest_names:
         for d_name in dest_names:
             clean = d_name.strip().lower()
             if len(clean) >= 3:
                 dest_tokens.add(clean)
+            clean_base = re.sub(
+                r"[\s_]+(?:railway\s+|rail\s+)?station$", "", clean, flags=re.IGNORECASE
+            ).strip()
+            if len(clean_base) >= 3:
+                dest_tokens.add(clean_base)
+            spaced = clean.replace("_", " ").strip()
+            if len(spaced) >= 3:
+                dest_tokens.add(spaced)
+            spaced_base = clean_base.replace("_", " ").strip()
+            if len(spaced_base) >= 3:
+                dest_tokens.add(spaced_base)
 
     # Check if origin station is explicitly named in the closure
     origin_in_closure = any(
@@ -780,6 +852,8 @@ def compute_service_status(
             disruption_texts.append(str(d["title"]))
         if d.get("summary"):
             disruption_texts.append(str(d["summary"]))
+        if d.get("description"):
+            disruption_texts.append(str(d["description"]))
         if d.get("alternative_travel"):
             disruption_texts.append(str(d["alternative_travel"]))
 
@@ -1563,14 +1637,13 @@ class DisruptionManager:
         origin_names: list[str] = []
         if origin_station_name and str(origin_station_name).strip():
             origin_names.append(str(origin_station_name).strip())
-        # Narrow fallback for Blackheath (BKH) when RTT metadata and configured names are unavailable
-        if not origin_names and origin.strip().upper() == "BKH":
+        if origin.strip().upper() == "BKH" and "Blackheath" not in origin_names:
             origin_names.append("Blackheath")
 
         dest_names: list[str] = []
         if destination_station_name and str(destination_station_name).strip():
             dest_names.append(str(destination_station_name).strip())
-        if not dest_names and destination and destination.strip().upper() == "BKH":
+        if destination and destination.strip().upper() == "BKH" and "Blackheath" not in dest_names:
             dest_names.append("Blackheath")
 
         for t in next_trains:
@@ -1641,6 +1714,7 @@ class DisruptionManager:
                         "title": inc["title"],
                         "is_planned": inc["is_planned"],
                         "summary": inc["summary"],
+                        "description": inc.get("description"),
                         "alternative_travel": inc.get("alternative_travel"),
                         "url": inc.get("url"),
                     }

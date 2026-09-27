@@ -488,7 +488,8 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not origin_station_name:
             cfg_name = query.get(CONF_SENSORNAME) or query.get("name")
             if cfg_name and isinstance(cfg_name, str):
-                cleaned_cfg = re.sub(r"\s+(?:Railway\s+)?Station$", "", cfg_name.strip(), flags=re.IGNORECASE).strip()
+                cleaned_cfg = re.sub(r"[\s_]+(?:Railway\s+|Rail\s+)?Station$", "", cfg_name.strip(), flags=re.IGNORECASE).strip()
+                cleaned_cfg = cleaned_cfg.replace("_", " ").strip()
                 if cleaned_cfg:
                     origin_station_name = cleaned_cfg
 

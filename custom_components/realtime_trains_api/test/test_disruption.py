@@ -18,6 +18,7 @@ from custom_components.realtime_trains_api.disruption import (
     incident_matches_crs,
     incident_mentions_station,
     is_explicit_current_closure,
+    is_origin_closure,
     is_explicit_current_engineering_work,
     compute_service_status,
     DarwinLdbClient,
@@ -2554,3 +2555,93 @@ async def test_kb_snapshot_mention_count_blind_spot_resolved():
     assert result.disruptions == []
     # Empty board with no active disruption falls back to no_departures
     assert result.service_status == SERVICE_STATUS_NO_DEPARTURES
+
+
+def test_station_name_normalization_with_suffixes_and_underscores():
+    """Verify station name matching handles suffixes like _station, Station, and underscores."""
+    incident = {
+        "id": "NRE_LEWISHAM_WEEKEND",
+        "title": "Engineering work in South East London",
+        "summary": "The following stations will be closed all weekend: Lewisham, Blackheath, Kidbrooke.",
+        "is_planned": True,
+        "validity_periods": [
+            (
+                datetime(2026, 9, 26, 0, 0, 0, tzinfo=UK_TZ),
+                datetime(2026, 9, 26, 23, 59, 59, tzinfo=UK_TZ),
+            )
+        ],
+        "routes_affected": "All routes via Lewisham",
+        "affects_stations": set(),
+    }
+    origin = "BKH"
+    # Configured sensor names with underscores and suffixes:
+    assert incident_matches_crs(incident, origin, ["blackheath_station"]) is True
+    assert incident_matches_crs(incident, origin, ["Blackheath Station"]) is True
+    assert is_origin_closure(incident["summary"], origin=origin, origin_names=["blackheath_station"]) is True
+    assert is_origin_closure(incident["summary"], origin=origin, origin_names=["Blackheath Station"]) is True
+    assert incident_mentions_station(incident, origin, ["blackheath_station"]) is True
+
+
+def test_weekend_closure_extended_boundaries():
+    """Verify weekend closure validity extends into Sunday evening and early Saturday morning."""
+    incident = {
+        "id": "NRE_WEEKEND_CLOSURE",
+        "title": "Closed all weekend for track renewals",
+        "summary": "The following stations will be closed all weekend: Blackheath.",
+        "is_planned": True,
+        "validity_periods": [
+            (
+                datetime(2026, 9, 26, 6, 0, 0, tzinfo=UK_TZ),
+                datetime(2026, 9, 27, 20, 0, 0, tzinfo=UK_TZ),
+            )
+        ],
+    }
+
+    # Early Saturday morning (04:00 before first train): active
+    assert is_incident_active(incident, datetime(2026, 9, 26, 4, 0, tzinfo=UK_TZ)) is True
+
+    # Sunday evening after 20:00 (e.g. 21:30): active until 23:59:59
+    assert is_incident_active(incident, datetime(2026, 9, 27, 21, 30, tzinfo=UK_TZ)) is True
+
+    # Monday morning (05:00): inactive
+    assert is_incident_active(incident, datetime(2026, 9, 28, 5, 0, tzinfo=UK_TZ)) is False
+
+
+def test_closure_in_description_when_summary_present():
+    """Verify that closure notices in description or alternative_travel match even when summary is present."""
+    incident = {
+        "id": "NRE_SPLIT_FIELDS",
+        "title": "Engineering work in South East London",
+        "summary": "Trains are diverted via alternative routes.",
+        "description": "The following stations will be closed all weekend: Lewisham, Blackheath.",
+        "alternative_travel": "Replacement buses run between New Cross and Dartford.",
+        "is_planned": True,
+        "validity_periods": [
+            (
+                datetime(2026, 9, 26, 0, 0, 0, tzinfo=UK_TZ),
+                datetime(2026, 9, 27, 23, 59, 59, tzinfo=UK_TZ),
+            )
+        ],
+        "affects_stations": set(),
+    }
+
+    assert incident_matches_crs(incident, "BKH", ["blackheath_station"]) is True
+    # Verify compute_service_status recognizes station_closed when closure is in description
+    disruptions = [
+        {
+            "id": incident["id"],
+            "title": incident["title"],
+            "summary": incident["summary"],
+            "description": incident["description"],
+            "alternative_travel": incident["alternative_travel"],
+            "is_planned": True,
+        }
+    ]
+    status = compute_service_status(
+        next_trains=[],
+        disruptions=disruptions,
+        station_messages=[],
+        origin="BKH",
+        origin_station_names=["blackheath_station"],
+    )
+    assert status == SERVICE_STATUS_STATION_CLOSED
