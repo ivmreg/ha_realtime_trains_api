@@ -45,6 +45,7 @@ All display clock times are normalized `"HH:MM"` 24-hour strings.
 | `kb_snapshot_incident_count` | integer \| null | Total parsed incidents in latest successful KB snapshot (`null` if unconfigured or failed) |
 | `kb_active_incident_count` | integer \| null | Parsed incidents active at query time (`null` if unconfigured or failed) |
 | `kb_station_mention_count` | integer \| null | Active incidents with bounded exact station name or CRS mention in title/summary/routes (`null` if unconfigured or failed) |
+| `kb_snapshot_mention_count` | integer \| null | Snapshot incidents with bounded exact station name or CRS mention in title/summary/routes regardless of active status (`null` if unconfigured or failed) |
 
 The sensor **state** is the integer minutes until the next matching departure, or `None` when there are none.
 

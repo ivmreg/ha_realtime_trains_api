@@ -49,6 +49,7 @@ from custom_components.realtime_trains_api.const import (
     ATTR_KB_SNAPSHOT_INCIDENT_COUNT,
     ATTR_KB_ACTIVE_INCIDENT_COUNT,
     ATTR_KB_STATION_MENTION_COUNT,
+    ATTR_KB_SNAPSHOT_MENTION_COUNT,
 )
 
 
@@ -2106,6 +2107,8 @@ async def test_kb_observability_counts_connected_and_active():
     assert result.kb_active_incident_count == 2
     # Active with Blackheath mention = 1 (INC_ACTIVE_BKH only)
     assert result.kb_station_mention_count == 1
+    # Snapshot mentions Blackheath = 2 (both INC_ACTIVE_BKH and INC_EXPIRED_BKH)
+    assert result.kb_snapshot_mention_count == 2
 
     # 3. Query for VIC: station mention count is 1 (INC_ACTIVE_VIC)
     result_vic = await manager.get_disruptions_for_query(
@@ -2117,6 +2120,7 @@ async def test_kb_observability_counts_connected_and_active():
     assert result_vic.kb_snapshot_incident_count == 3
     assert result_vic.kb_active_incident_count == 2
     assert result_vic.kb_station_mention_count == 1
+    assert result_vic.kb_snapshot_mention_count == 1
 
     # 4. Query for unrelated station (WAT): station mention count is 0
     result_wat = await manager.get_disruptions_for_query(
@@ -2128,6 +2132,7 @@ async def test_kb_observability_counts_connected_and_active():
     assert result_wat.kb_snapshot_incident_count == 3
     assert result_wat.kb_active_incident_count == 2
     assert result_wat.kb_station_mention_count == 0
+    assert result_wat.kb_snapshot_mention_count == 0
 
 
 @pytest.mark.asyncio
@@ -2199,6 +2204,7 @@ async def test_kb_observability_distinguishes_feed_miss_from_matcher_miss():
     assert res_a.kb_snapshot_incident_count == 1
     assert res_a.kb_active_incident_count == 1
     assert res_a.kb_station_mention_count == 0
+    assert res_a.kb_snapshot_mention_count == 0
     assert res_a.disruptions == []
 
     # 2. Test Matcher Miss
@@ -2221,6 +2227,7 @@ async def test_kb_observability_distinguishes_feed_miss_from_matcher_miss():
     assert res_b.kb_snapshot_incident_count == 1
     assert res_b.kb_active_incident_count == 1
     assert res_b.kb_station_mention_count == 1
+    assert res_b.kb_snapshot_mention_count == 1
     assert res_b.disruptions == []
 
 
@@ -2237,6 +2244,7 @@ async def test_kb_observability_counts_unconfigured_and_failed():
     assert res_unconf.kb_snapshot_incident_count is None
     assert res_unconf.kb_active_incident_count is None
     assert res_unconf.kb_station_mention_count is None
+    assert res_unconf.kb_snapshot_mention_count is None
     assert dm_unconfigured.kb_snapshot_incident_count is None
 
     # 2. Auth failed (HTTP 401)
@@ -2255,6 +2263,7 @@ async def test_kb_observability_counts_unconfigured_and_failed():
     assert res_auth_fail.kb_snapshot_incident_count is None
     assert res_auth_fail.kb_active_incident_count is None
     assert res_auth_fail.kb_station_mention_count is None
+    assert res_auth_fail.kb_snapshot_mention_count is None
     assert dm_auth_fail.kb_snapshot_incident_count is None
 
     # 3. Failed refresh after previous success clears counts to None
@@ -2306,6 +2315,7 @@ async def test_kb_observability_counts_unconfigured_and_failed():
         assert res2.kb_snapshot_incident_count is None
         assert res2.kb_active_incident_count is None
         assert res2.kb_station_mention_count is None
+        assert res2.kb_snapshot_mention_count is None
         assert dm_refresh.kb_snapshot_incident_count is None
 
 
@@ -2404,6 +2414,7 @@ async def test_station_sensor_kb_counts_integration():
     assert attrs_before[ATTR_KB_SNAPSHOT_INCIDENT_COUNT] is None
     assert attrs_before[ATTR_KB_ACTIVE_INCIDENT_COUNT] is None
     assert attrs_before[ATTR_KB_STATION_MENTION_COUNT] is None
+    assert attrs_before[ATTR_KB_SNAPSHOT_MENTION_COUNT] is None
 
     # 2. After coordinator update with empty board: counts are accurate integers
     with patch("custom_components.realtime_trains_api.coordinator.dt_util.now", return_value=now):
@@ -2414,6 +2425,7 @@ async def test_station_sensor_kb_counts_integration():
     assert attrs_after[ATTR_KB_SNAPSHOT_INCIDENT_COUNT] == 2
     assert attrs_after[ATTR_KB_ACTIVE_INCIDENT_COUNT] == 2
     assert attrs_after[ATTR_KB_STATION_MENTION_COUNT] == 1
+    assert attrs_after[ATTR_KB_SNAPSHOT_MENTION_COUNT] == 1
 
     # 3. Verify security: credentials, tokens, and raw incident payloads MUST NOT be exposed
     attrs_str = str(attrs_after)
@@ -2421,3 +2433,124 @@ async def test_station_sensor_kb_counts_integration():
     assert "secret_password" not in attrs_str
     assert "secret_token_123" not in attrs_str
     assert "INC1" not in attrs_after[ATTR_KB_SNAPSHOT_INCIDENT_COUNT].__class__.__name__
+
+
+def test_weekend_engineering_closure_overnight_validity():
+    """Verify that multi-day weekend engineering closures remain active across overnight hours."""
+    incident = {
+        "id": "NRE_LEWISHAM_WEEKEND",
+        "title": "No Southeastern services via Lewisham on Saturday 26 and Sunday 27 September",
+        "summary": "The following stations will be closed all weekend: Lewisham, Blackheath, Kidbrooke.",
+        "description": "The following stations will be closed all weekend: Lewisham, Blackheath, Kidbrooke.",
+        "is_planned": True,
+        "validity_periods": [
+            (
+                datetime(2026, 9, 26, 0, 0, 0, tzinfo=UK_TZ),
+                datetime(2026, 9, 26, 23, 59, 59, tzinfo=UK_TZ),
+            )
+        ],
+        "routes_affected": "All routes via Lewisham",
+        "affects_stations": set(),
+    }
+
+    # Friday before: inactive
+    assert is_incident_active(incident, datetime(2026, 9, 25, 23, 0, tzinfo=UK_TZ)) is False
+
+    # Saturday daytime: active
+    assert is_incident_active(incident, datetime(2026, 9, 26, 12, 0, tzinfo=UK_TZ)) is True
+
+    # Overnight Sunday early morning (e.g. 03:00): active
+    assert is_incident_active(incident, datetime(2026, 9, 27, 3, 0, tzinfo=UK_TZ)) is True
+
+    # Sunday morning (07:41): active
+    assert is_incident_active(incident, datetime(2026, 9, 27, 7, 41, 18, tzinfo=UK_TZ)) is True
+
+    # Sunday afternoon: active
+    assert is_incident_active(incident, datetime(2026, 9, 27, 15, 0, tzinfo=UK_TZ)) is True
+
+    # Sunday late night: active
+    assert is_incident_active(incident, datetime(2026, 9, 27, 23, 30, tzinfo=UK_TZ)) is True
+
+    # Monday morning: inactive
+    assert is_incident_active(incident, datetime(2026, 9, 28, 6, 0, tzinfo=UK_TZ)) is False
+
+
+def test_consecutive_validity_periods_overnight_gap():
+    """Verify that overnight gaps between consecutive validity periods in planned work are bridged."""
+    incident = {
+        "id": "NRE_PLANNED_TWO_DAYS",
+        "title": "Engineering work between Lewisham and Dartford",
+        "summary": "Buses replace trains",
+        "is_planned": True,
+        "validity_periods": [
+            (
+                datetime(2026, 9, 26, 6, 0, 0, tzinfo=UK_TZ),
+                datetime(2026, 9, 26, 23, 59, 0, tzinfo=UK_TZ),
+            ),
+            (
+                datetime(2026, 9, 27, 8, 0, 0, tzinfo=UK_TZ),
+                datetime(2026, 9, 27, 23, 59, 0, tzinfo=UK_TZ),
+            ),
+        ],
+    }
+
+    # Query during overnight gap (04:00 Sunday): bridged as active
+    assert is_incident_active(incident, datetime(2026, 9, 27, 4, 0, tzinfo=UK_TZ)) is True
+
+
+@pytest.mark.asyncio
+async def test_kb_snapshot_mention_count_blind_spot_resolved():
+    """Verify that kb_snapshot_mention_count reveals incidents present in snapshot even when inactive."""
+    now = datetime(2026, 9, 27, 7, 41, 18, tzinfo=UK_TZ)
+
+    # Inactive incident (scheduled for next weekend) that mentions Blackheath
+    future_incident_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<Incidents xmlns="http://nationalrail.co.uk/xml/incident">
+  <PtIncident id="NRE_FUTURE_BKH">
+    <Header>Advance Notice: Engineering Works</Header>
+    <IncidentDescription>Planned closures at Blackheath next weekend.</IncidentDescription>
+    <PlannedIncident>true</PlannedIncident>
+    <ClearedIncident>false</ClearedIncident>
+    <ValidityPeriods>
+      <ValidityPeriod>
+        <StartTime>2026-10-03T00:00:00+01:00</StartTime>
+        <EndTime>2026-10-04T23:59:59+01:00</EndTime>
+      </ValidityPeriod>
+    </ValidityPeriods>
+    <Affects><RoutesAffected>Routes via Blackheath</RoutesAffected></Affects>
+  </PtIncident>
+</Incidents>"""
+
+    mock_auth = AsyncMock()
+    mock_auth.status = 200
+    mock_auth.headers = {"X-Auth-Token": "tok"}
+    mock_auth.text.return_value = ""
+    auth_ctx = MagicMock()
+    auth_ctx.__aenter__ = AsyncMock(return_value=mock_auth)
+    auth_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    feed_resp = AsyncMock()
+    feed_resp.status = 200
+    feed_resp.read.return_value = future_incident_xml
+    feed_ctx = MagicMock()
+    feed_ctx.__aenter__ = AsyncMock(return_value=feed_resp)
+    feed_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    sess = MagicMock()
+    sess.post.return_value = auth_ctx
+    sess.get.return_value = feed_ctx
+
+    manager = DisruptionManager(kb_client=KnowledgeBaseClient(sess, username="u", password="p"))
+    result = await manager.get_disruptions_for_query(
+        origin="BKH", destination=None, next_trains=[], now=now
+    )
+
+    # The incident is IN the snapshot, but NOT active at this query time
+    assert result.kb_snapshot_incident_count == 1
+    assert result.kb_active_incident_count == 0
+    assert result.kb_station_mention_count == 0
+    # The diagnostic blind spot is resolved: kb_snapshot_mention_count reveals the mention in snapshot!
+    assert result.kb_snapshot_mention_count == 1
+    assert result.disruptions == []
+    # Empty board with no active disruption falls back to no_departures
+    assert result.service_status == SERVICE_STATUS_NO_DEPARTURES

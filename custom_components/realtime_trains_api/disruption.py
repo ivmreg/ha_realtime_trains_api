@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import html
 import json
 import logging
@@ -253,38 +253,155 @@ def parse_incident_datetime(
     return None
 
 
+def _is_weekend_or_multi_day_closure(incident: dict[str, Any]) -> bool:
+    """Check if an incident represents a weekend or multi-day engineering/closure notice."""
+    text = " ".join([
+        str(incident.get("title") or ""),
+        str(incident.get("summary") or ""),
+        str(incident.get("routes_affected") or incident.get("routes") or ""),
+        str(incident.get("description") or ""),
+        str(incident.get("alternative_travel") or ""),
+    ]).lower()
+
+    weekend_patterns = [
+        "all weekend",
+        "closed all weekend",
+        "is closed all weekend",
+        "will be closed all weekend",
+        "stations will be closed all weekend",
+        "station is closed all weekend",
+        "across the weekend",
+        "over the weekend",
+        "this weekend",
+        "the weekend",
+        "during the weekend",
+        "weekend engineering",
+        "weekend work",
+        "weekend works",
+        "weekend closure",
+        "weekend closures",
+    ]
+    if any(pat in text for pat in weekend_patterns):
+        return True
+
+    if ("saturday" in text and "sunday" in text) or ("sat" in text and "sun" in text):
+        if any(w in text for w in ("closed", "closure", "engineering", "maintenance", "buses", "work", "suspended", "no services", "no trains")):
+            return True
+
+    return False
+
+
 def is_incident_active(incident: dict[str, Any], now: datetime) -> bool:
-    """Check if an incident is active at the given timezone-aware time."""
+    """Check if an incident is active at the given timezone-aware time.
+
+    Handles:
+    - Standard validity period checks: start <= now <= end.
+    - Overnight gaps between consecutive validity periods in multi-day/weekend
+      engineering works when passenger trains are suspended.
+    - Multi-day weekend engineering closures (e.g., all weekend station closures)
+      spanning across overnight hours between Saturday and Sunday.
+    """
     if now.tzinfo is None:
         now = now.replace(tzinfo=UK_TZ)
 
-    validity_periods = incident.get("validity_periods")
-    if validity_periods is None:
+    raw_periods = incident.get("validity_periods")
+    if raw_periods is None:
         start_str = incident.get("start_time")
         end_str = incident.get("end_time")
         if start_str or end_str:
-            validity_periods = [(
+            raw_periods = [(
                 parse_incident_datetime(start_str) if isinstance(start_str, str) else start_str,
-                parse_incident_datetime(end_str) if isinstance(end_str, str) else end_str,
+                parse_incident_datetime(end_str, is_end=True) if isinstance(end_str, str) else end_str,
             )]
         else:
             return True
 
-    if not validity_periods:
+    if not raw_periods:
         return True
 
+    # Normalize tzinfo for all period bounds
+    validity_periods: list[tuple[datetime | None, datetime | None]] = []
+    for s_dt, e_dt in raw_periods:
+        if isinstance(s_dt, str):
+            s_dt = parse_incident_datetime(s_dt)
+        if isinstance(e_dt, str):
+            e_dt = parse_incident_datetime(e_dt, is_end=True)
+        if s_dt is not None and s_dt.tzinfo is None:
+            s_dt = s_dt.replace(tzinfo=UK_TZ)
+        if e_dt is not None and e_dt.tzinfo is None:
+            e_dt = e_dt.replace(tzinfo=UK_TZ)
+        validity_periods.append((s_dt, e_dt))
+
+    # 1. Direct match: falls within any individual validity period
     for start_dt, end_dt in validity_periods:
-        if start_dt is not None:
-            if start_dt.tzinfo is None:
-                start_dt = start_dt.replace(tzinfo=UK_TZ)
-            if start_dt > now:
-                continue
-        if end_dt is not None:
-            if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=UK_TZ)
-            if end_dt < now:
-                continue
+        if start_dt is not None and start_dt > now:
+            continue
+        if end_dt is not None and end_dt < now:
+            continue
         return True
+
+    # 2. Check for multi-day weekend closure or overnight suspension handling
+    is_weekend = _is_weekend_or_multi_day_closure(incident)
+    is_planned = incident.get("is_planned") is True
+
+    # Collect bounded periods sorted by start
+    bounded = [
+        (s, e) for s, e in validity_periods
+        if s is not None and e is not None
+    ]
+    bounded.sort(key=lambda p: p[0])
+
+    if bounded:
+        earliest_start = bounded[0][0]
+        latest_end = max(e for _, e in bounded)
+
+        # 2a. Weekend closure spanning across the entire weekend:
+        if is_weekend:
+            target_end = latest_end
+            text = " ".join([
+                str(incident.get("title") or ""),
+                str(incident.get("summary") or ""),
+                str(incident.get("routes_affected") or incident.get("routes") or ""),
+                str(incident.get("description") or ""),
+                str(incident.get("alternative_travel") or ""),
+            ]).lower()
+
+            covers_sunday = any(w in text for w in ("sunday", "sun", "weekend", "all weekend"))
+            if covers_sunday:
+                if target_end.weekday() == 5:  # Saturday
+                    sunday_date = target_end.date() + timedelta(days=1)
+                    target_end = datetime(
+                        sunday_date.year, sunday_date.month, sunday_date.day,
+                        23, 59, 59, tzinfo=target_end.tzinfo or UK_TZ
+                    )
+                elif target_end.weekday() == 6 and target_end.hour < 20:  # Early Sunday
+                    target_end = datetime(
+                        target_end.year, target_end.month, target_end.day,
+                        23, 59, 59, tzinfo=target_end.tzinfo or UK_TZ
+                    )
+
+            if earliest_start <= now <= target_end:
+                return True
+
+        # 2b. Overnight gap between consecutive validity periods:
+        # e.g., Period 1 ends Saturday night, Period 2 starts Sunday morning
+        if is_planned or is_weekend:
+            for i in range(len(bounded) - 1):
+                prev_end = bounded[i][1]
+                next_start = bounded[i + 1][0]
+                if prev_end <= now <= next_start:
+                    gap = next_start - prev_end
+                    if gap <= timedelta(hours=28):
+                        # Verify the gap is overnight (crosses date boundary, or evening to morning)
+                        is_overnight = (
+                            prev_end.date() != next_start.date()
+                            or prev_end.hour >= 18
+                            or next_start.hour <= 12
+                            or now.hour >= 20
+                            or now.hour < 8
+                        )
+                        if is_overnight:
+                            return True
 
     return False
 
@@ -429,9 +546,11 @@ def incident_mentions_station(
         names_to_check.append("Blackheath")
 
     text_parts = [
-        incident.get("title") or "",
-        incident.get("summary") or incident.get("description") or "",
-        incident.get("routes_affected") or incident.get("routes") or "",
+        str(incident.get("title") or ""),
+        str(incident.get("summary") or ""),
+        str(incident.get("description") or ""),
+        str(incident.get("routes_affected") or incident.get("routes") or ""),
+        str(incident.get("alternative_travel") or ""),
     ]
     combined_text = " ".join(t for t in text_parts if t)
     if not combined_text:
@@ -1322,6 +1441,7 @@ class DisruptionQueryResult(tuple):
         kb_snapshot_incident_count: int | None = None,
         kb_active_incident_count: int | None = None,
         kb_station_mention_count: int | None = None,
+        kb_snapshot_mention_count: int | None = None,
     ) -> DisruptionQueryResult:
         instance = super().__new__(cls, (service_status, station_messages, disruptions))
         instance.service_status = service_status
@@ -1330,6 +1450,7 @@ class DisruptionQueryResult(tuple):
         instance.kb_snapshot_incident_count = kb_snapshot_incident_count
         instance.kb_active_incident_count = kb_active_incident_count
         instance.kb_station_mention_count = kb_station_mention_count
+        instance.kb_snapshot_mention_count = kb_snapshot_mention_count
         return instance
 
 
@@ -1476,25 +1597,33 @@ class DisruptionManager:
             snapshot_count = None
             active_count = None
             station_mention_count = None
+            snapshot_mention_count = None
         else:
             snapshot_count = len(raw_incidents)
             active_count = 0
             station_mention_count = 0
+            snapshot_mention_count = 0
 
         disruptions: list[dict[str, Any]] = []
         for inc in raw_incidents:
-            # Filter active incidents using timezone-aware now
-            if not is_incident_active(inc, now):
-                continue
-
+            mentions_origin = False
+            mentions_dest = False
             if is_connected:
-                active_count += 1
                 mentions_origin = incident_mentions_station(inc, origin, origin_names)
                 mentions_dest = (
                     incident_mentions_station(inc, destination, dest_names)
                     if destination
                     else False
                 )
+                if mentions_origin or mentions_dest:
+                    snapshot_mention_count += 1
+
+            # Filter active incidents using timezone-aware now
+            if not is_incident_active(inc, now):
+                continue
+
+            if is_connected:
+                active_count += 1
                 if mentions_origin or mentions_dest:
                     station_mention_count += 1
 
@@ -1534,4 +1663,5 @@ class DisruptionManager:
             kb_snapshot_incident_count=snapshot_count,
             kb_active_incident_count=active_count,
             kb_station_mention_count=station_mention_count,
+            kb_snapshot_mention_count=snapshot_mention_count,
         )

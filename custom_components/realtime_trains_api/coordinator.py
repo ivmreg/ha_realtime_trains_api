@@ -519,6 +519,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             kb_snapshot_count = getattr(disruption_res, "kb_snapshot_incident_count", None)
             kb_active_count = getattr(disruption_res, "kb_active_incident_count", None)
             kb_mention_count = getattr(disruption_res, "kb_station_mention_count", None)
+            kb_snapshot_mention_count = getattr(disruption_res, "kb_snapshot_mention_count", None)
         except Exception as err:
             _LOGGER.debug("Disruption fetch failed for %s: %s", origin, type(err).__name__)
             service_status = compute_service_status(next_trains, [], [])
@@ -527,6 +528,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             kb_snapshot_count = None
             kb_active_count = None
             kb_mention_count = None
+            kb_snapshot_mention_count = None
 
         kb_status = getattr(self.disruption_manager, "kb_connection_status", KB_STATUS_NOT_CONFIGURED)
         if not isinstance(kb_status, str):
@@ -552,6 +554,7 @@ class RealtimeTrainsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "kb_snapshot_incident_count": kb_snapshot_count,
             "kb_active_incident_count": kb_active_count,
             "kb_station_mention_count": kb_mention_count,
+            "kb_snapshot_mention_count": kb_snapshot_mention_count,
         }
 
     async def _enrich_journey_data(
