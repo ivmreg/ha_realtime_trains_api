@@ -2759,28 +2759,41 @@ async def test_passing_train_remote_destination_does_not_contaminate_destination
 
 
 @pytest.mark.asyncio
-async def test_genuine_origin_incident_and_route_notice_preserved():
-    """Verify that genuine incidents affecting the query origin or route are preserved."""
+@pytest.mark.parametrize(
+    ("crs", "station_name"),
+    [
+        ("BKH", "Blackheath"),
+        ("LEW", "Lewisham"),
+    ],
+)
+async def test_genuine_origin_incident_and_route_notice_preserved(crs: str, station_name: str):
+    """Verify that genuine incidents affecting the query origin or route are preserved.
+
+    Tests both BKH (with canonical fallback) and non-BKH stations (LEW) to ensure
+    the supplied query station name properly retains valid route-level engineering notices.
+    """
     now = datetime(2026, 9, 28, 12, 0, tzinfo=UK_TZ)
     mock_darwin = AsyncMock()
     mock_darwin.fetch_station_messages.return_value = []
 
     mock_kb = AsyncMock()
-    bkh_incident = {
-        "id": "NRE_BKH_ENGINEERING",
-        "title": "Engineering work between Lewisham and Dartford via Blackheath",
-        "summary": "Engineering work is taking place via Blackheath. Buses replace trains.",
-        "description": "Lines closed via Blackheath.",
+    # Title intentionally excludes the station name; affects_stations is empty.
+    # The route notice and explicit engineering summary ensure matching is driven by supplied station name.
+    incident = {
+        "id": f"NRE_{crs}_ENGINEERING",
+        "title": "Track renewals and maintenance",
+        "summary": f"Engineering work is taking place via {station_name}. Buses replace trains.",
+        "description": f"Lines closed via {station_name}.",
         "is_planned": True,
         "validity_periods": [
             (datetime(2026, 9, 28, 0, 0, tzinfo=UK_TZ), datetime(2026, 9, 28, 23, 59, tzinfo=UK_TZ))
         ],
         "affects_stations": set(),
-        "routes_affected": "Southeastern services via Blackheath",
-        "alternative_travel": "Replacement buses operate via Blackheath.",
+        "routes_affected": f"Services via {station_name}",
+        "alternative_travel": f"Replacement buses operate via {station_name}.",
         "url": None,
     }
-    mock_kb.fetch_incidents.return_value = [bkh_incident]
+    mock_kb.fetch_incidents.return_value = [incident]
 
     manager = DisruptionManager(darwin_client=mock_darwin, kb_client=mock_kb, cache_ttl_seconds=60)
 
@@ -2793,16 +2806,16 @@ async def test_genuine_origin_incident_and_route_notice_preserved():
     }
 
     status, messages, disruptions = await manager.get_disruptions_for_query(
-        origin="BKH",
+        origin=crs,
         destination=None,
         next_trains=[passing_train],
         now=now,
-        origin_station_name="Blackheath",
+        origin_station_name=station_name,
     )
 
     # Valid origin incident MUST match
     assert len(disruptions) == 1
-    assert disruptions[0]["id"] == "NRE_BKH_ENGINEERING"
+    assert disruptions[0]["id"] == f"NRE_{crs}_ENGINEERING"
     assert status == SERVICE_STATUS_ENGINEERING_WORK
 
 
@@ -2905,5 +2918,3 @@ async def test_bkh_fallback_preserved_when_caller_omits_station_name():
     assert len(disruptions) == 1
     assert disruptions[0]["id"] == "NRE_BKH_ENGINEERING"
     assert status == SERVICE_STATUS_STATION_CLOSED
-
-
