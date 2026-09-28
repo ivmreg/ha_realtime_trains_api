@@ -1646,14 +1646,6 @@ class DisruptionManager:
         if destination and destination.strip().upper() == "BKH" and "Blackheath" not in dest_names:
             dest_names.append("Blackheath")
 
-        for t in next_trains:
-            o_name = t.get("origin_name")
-            if o_name and o_name not in origin_names:
-                origin_names.append(o_name)
-            d_name = t.get("destination_name")
-            if d_name and d_name not in dest_names:
-                dest_names.append(d_name)
-
         # Correlate destination messages to this query
         all_messages: list[str] = list(station_messages)
         correlated_dest_messages: list[str] = []

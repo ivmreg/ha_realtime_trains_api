@@ -20,6 +20,7 @@ from custom_components.realtime_trains_api.disruption import (
     is_explicit_current_closure,
     is_origin_closure,
     is_explicit_current_engineering_work,
+    is_destination_message_relevant,
     compute_service_status,
     DarwinLdbClient,
     KnowledgeBaseClient,
@@ -2645,3 +2646,264 @@ def test_closure_in_description_when_summary_present():
         origin_station_names=["blackheath_station"],
     )
     assert status == SERVICE_STATUS_STATION_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_passing_train_remote_origin_does_not_contaminate_origin_aliases():
+    """Verify that a passing train with a remote origin does not turn the remote origin into a query station alias.
+
+    Regression test: Lines 1649-1655 of disruption.py previously appended next_trains origin_name
+    to origin_names, causing remote incidents (e.g. engineering work at Dartford) to match
+    queries for passing stations (e.g. Blackheath) and falsely set engineering_work status.
+    """
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=UK_TZ)
+    mock_darwin = AsyncMock()
+    mock_darwin.fetch_station_messages.return_value = []
+
+    mock_kb = AsyncMock()
+    # Incident is specifically at Dartford, remote from Blackheath
+    dartford_incident = {
+        "id": "NRE_DFD_ENGINEERING",
+        "title": "Engineering work in Dartford area",
+        "summary": "Buses replace trains between Dartford and Gravesend.",
+        "description": "Track maintenance at Dartford station.",
+        "is_planned": True,
+        "validity_periods": [
+            (datetime(2026, 9, 28, 0, 0, tzinfo=UK_TZ), datetime(2026, 9, 28, 23, 59, tzinfo=UK_TZ))
+        ],
+        "affects_stations": {"DFD", "GRV"},
+        "routes_affected": "Southeastern services between Dartford and Gravesend",
+        "alternative_travel": "Replacement buses run between Dartford and Gravesend.",
+        "url": None,
+    }
+    mock_kb.fetch_incidents.return_value = [dartford_incident]
+
+    manager = DisruptionManager(darwin_client=mock_darwin, kb_client=mock_kb, cache_ttl_seconds=60)
+
+    # Passing train through Blackheath originating from Dartford
+    passing_train = {
+        "origin_name": "Dartford",
+        "destination_name": "London Victoria",
+        "status": "on_time",
+        "delay_minutes": 0,
+        "is_cancelled": False,
+    }
+
+    status, messages, disruptions = await manager.get_disruptions_for_query(
+        origin="BKH",
+        destination=None,
+        next_trains=[passing_train],
+        now=now,
+        origin_station_name="Blackheath",
+    )
+
+    # Dartford incident must NOT match Blackheath query
+    assert disruptions == []
+    assert status == SERVICE_STATUS_NORMAL
+
+
+@pytest.mark.asyncio
+async def test_passing_train_remote_destination_does_not_contaminate_destination_aliases():
+    """Verify that a passing train with a remote destination does not contaminate destination aliases.
+
+    Regression test: Next_trains destination_name was previously appended to dest_names,
+    causing incidents at a service's final terminus (e.g. Charing Cross) to match queries for an
+    intermediate queried destination (e.g. London Bridge).
+    """
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=UK_TZ)
+    mock_darwin = AsyncMock()
+    mock_darwin.fetch_station_messages.return_value = []
+
+    mock_kb = AsyncMock()
+    # Incident specifically at Charing Cross
+    chx_incident = {
+        "id": "NRE_CHX_ENGINEERING",
+        "title": "Engineering work at London Charing Cross",
+        "summary": "Platforms 1-3 closed at London Charing Cross.",
+        "description": "Track maintenance at London Charing Cross.",
+        "is_planned": True,
+        "validity_periods": [
+            (datetime(2026, 9, 28, 0, 0, tzinfo=UK_TZ), datetime(2026, 9, 28, 23, 59, tzinfo=UK_TZ))
+        ],
+        "affects_stations": {"CHX"},
+        "routes_affected": "Services to / from London Charing Cross",
+        "alternative_travel": None,
+        "url": None,
+    }
+    mock_kb.fetch_incidents.return_value = [chx_incident]
+
+    manager = DisruptionManager(darwin_client=mock_darwin, kb_client=mock_kb, cache_ttl_seconds=60)
+
+    # Queried route: Blackheath (BKH) -> London Bridge (LBG)
+    # Train calls at London Bridge but continues to London Charing Cross
+    train = {
+        "origin_name": "Blackheath",
+        "destination_name": "London Charing Cross",
+        "status": "on_time",
+        "delay_minutes": 0,
+        "is_cancelled": False,
+    }
+
+    status, messages, disruptions = await manager.get_disruptions_for_query(
+        origin="BKH",
+        destination="LBG",
+        next_trains=[train],
+        now=now,
+        origin_station_name="Blackheath",
+        destination_station_name="London Bridge",
+    )
+
+    # Charing Cross incident must NOT match London Bridge destination query
+    assert disruptions == []
+    assert status == SERVICE_STATUS_NORMAL
+
+
+@pytest.mark.asyncio
+async def test_genuine_origin_incident_and_route_notice_preserved():
+    """Verify that genuine incidents affecting the query origin or route are preserved."""
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=UK_TZ)
+    mock_darwin = AsyncMock()
+    mock_darwin.fetch_station_messages.return_value = []
+
+    mock_kb = AsyncMock()
+    bkh_incident = {
+        "id": "NRE_BKH_ENGINEERING",
+        "title": "Engineering work between Lewisham and Dartford via Blackheath",
+        "summary": "Engineering work is taking place via Blackheath. Buses replace trains.",
+        "description": "Lines closed via Blackheath.",
+        "is_planned": True,
+        "validity_periods": [
+            (datetime(2026, 9, 28, 0, 0, tzinfo=UK_TZ), datetime(2026, 9, 28, 23, 59, tzinfo=UK_TZ))
+        ],
+        "affects_stations": set(),
+        "routes_affected": "Southeastern services via Blackheath",
+        "alternative_travel": "Replacement buses operate via Blackheath.",
+        "url": None,
+    }
+    mock_kb.fetch_incidents.return_value = [bkh_incident]
+
+    manager = DisruptionManager(darwin_client=mock_darwin, kb_client=mock_kb, cache_ttl_seconds=60)
+
+    passing_train = {
+        "origin_name": "Dartford",
+        "destination_name": "London Victoria",
+        "status": "on_time",
+        "delay_minutes": 0,
+        "is_cancelled": False,
+    }
+
+    status, messages, disruptions = await manager.get_disruptions_for_query(
+        origin="BKH",
+        destination=None,
+        next_trains=[passing_train],
+        now=now,
+        origin_station_name="Blackheath",
+    )
+
+    # Valid origin incident MUST match
+    assert len(disruptions) == 1
+    assert disruptions[0]["id"] == "NRE_BKH_ENGINEERING"
+    assert status == SERVICE_STATUS_ENGINEERING_WORK
+
+
+@pytest.mark.asyncio
+async def test_genuine_destination_incident_and_service_status_preserved():
+    """Verify that genuine incidents affecting the query destination are preserved."""
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=UK_TZ)
+    mock_darwin = AsyncMock()
+    mock_darwin.fetch_station_messages.return_value = []
+
+    mock_kb = AsyncMock()
+    cst_incident = {
+        "id": "NRE_CST_DISRUPTION",
+        "title": "Signalling problem at London Cannon Street",
+        "summary": "Major disruption to services terminating at London Cannon Street.",
+        "description": "All lines into Cannon Street blocked.",
+        "is_planned": False,
+        "validity_periods": [
+            (datetime(2026, 9, 28, 0, 0, tzinfo=UK_TZ), datetime(2026, 9, 28, 23, 59, tzinfo=UK_TZ))
+        ],
+        "affects_stations": {"CST"},
+        "routes_affected": "Services to / from London Cannon Street",
+        "alternative_travel": "Tickets accepted on London Underground.",
+        "url": None,
+    }
+    mock_kb.fetch_incidents.return_value = [cst_incident]
+
+    manager = DisruptionManager(darwin_client=mock_darwin, kb_client=mock_kb, cache_ttl_seconds=60)
+
+    train = {
+        "origin_name": "Dartford",
+        "destination_name": "London Cannon Street",
+        "status": "on_time",
+        "delay_minutes": 0,
+        "is_cancelled": False,
+    }
+
+    status, messages, disruptions = await manager.get_disruptions_for_query(
+        origin="BKH",
+        destination="CST",
+        next_trains=[train],
+        now=now,
+        origin_station_name="Blackheath",
+        destination_station_name="London Cannon Street",
+    )
+
+    # Genuine destination disruption MUST match and set disrupted status
+    assert len(disruptions) == 1
+    assert disruptions[0]["id"] == "NRE_CST_DISRUPTION"
+    assert status == SERVICE_STATUS_DISRUPTED
+
+
+def test_destination_message_not_correlated_via_passing_origin():
+    """Verify that a destination station message mentioning a passing train's remote origin is not correlated."""
+    msg = "Delays to trains towards Dartford via Bexleyheath."
+    # Queried origin is Blackheath (BKH), destination is Cannon Street (CST)
+    assert is_destination_message_relevant(
+        msg=msg,
+        origin="BKH",
+        origin_names=["Blackheath"],
+        destination="CST",
+        dest_names=["London Cannon Street"],
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_bkh_fallback_preserved_when_caller_omits_station_name():
+    """Verify that BKH fallback to 'Blackheath' is preserved when origin_station_name is not supplied."""
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=UK_TZ)
+    mock_darwin = AsyncMock()
+    mock_darwin.fetch_station_messages.return_value = []
+
+    mock_kb = AsyncMock()
+    bkh_incident = {
+        "id": "NRE_BKH_ENGINEERING",
+        "title": "Engineering work at Blackheath",
+        "summary": "Blackheath station closed all weekend.",
+        "description": "Station closed.",
+        "is_planned": True,
+        "validity_periods": [
+            (datetime(2026, 9, 28, 0, 0, tzinfo=UK_TZ), datetime(2026, 9, 28, 23, 59, tzinfo=UK_TZ))
+        ],
+        "affects_stations": set(),
+        "routes_affected": "Services via Blackheath",
+        "alternative_travel": None,
+        "url": None,
+    }
+    mock_kb.fetch_incidents.return_value = [bkh_incident]
+
+    manager = DisruptionManager(darwin_client=mock_darwin, kb_client=mock_kb, cache_ttl_seconds=60)
+
+    status, messages, disruptions = await manager.get_disruptions_for_query(
+        origin="BKH",
+        destination=None,
+        next_trains=[],
+        now=now,
+        origin_station_name=None,  # Fallback must kick in
+    )
+
+    assert len(disruptions) == 1
+    assert disruptions[0]["id"] == "NRE_BKH_ENGINEERING"
+    assert status == SERVICE_STATUS_STATION_CLOSED
+
+
